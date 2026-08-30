@@ -143,7 +143,7 @@ document-specialist-agent/
 
 1. 环境与骨架：Python 3.13 venv、git init、目录结构、README
 2. `core/config.py` + Storage 重构：去 import 副作用、lazy bucket、`.env` 加载
-3. `task/`：Task 模型 + TaskManager（内存实现 + 存储接口抽象，后续可换 Redis）
+3. ✅ `task/`：Task 模型 + TaskManager（内存实现 + 存储接口抽象，后续可换 Redis）
 4. `tools/`：BaseTool + ToolRegistry + sandbox/file/report 工具
 5. `sandbox/`：Hook 重构、二进制安全传输、统一输出解析
 6. `agent/`：Planner（LLM 结构化计划）→ Executor（多轮 tool-calling 循环）→ Orchestrator
@@ -183,3 +183,5 @@ python -m pytest
 ## 7. 设计笔记索引
 
 每个模块交付时附 Design Note（模块作用 / 设计原因 / 核心流程 / 关键代码 / 面试回答），归档于 `docs/design/`。
+
+- [01_task_module.md](docs/design/01_task_module.md)：任务生命周期模块
