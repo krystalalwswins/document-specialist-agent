@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  # 1. 云沙箱隔离环境
+  aio-sandbox:
+    container_name: doc-agent-sandbox
+    image: enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:1.11.0
+    security_opt:
+      - seccomp:unconfined
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - sandbox_data:/home/gem/workspace
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    shm_size: "2gb"
+    environment:
+      # 留空则保持向后兼容（服务开放）；设置后 SDK 需同步传入 api_key
+      SANDBOX_API_KEY: ${SANDBOX_API_KEY:-}
+      WORKSPACE: ${WORKSPACE:-/home/gem/workspace}
+      TZ: ${TZ:-Asia/Shanghai}
+
+  # 2. 开源对象存储服务 (MinIO)
+  minio:
+    image: minio/minio:RELEASE.2024-01-16T16-07-38Z
+    container_name: doc-agent-minio
+    ports:
+      - "9000:9000"   # API 端口
+      - "9090:9090"   # 控制台端口
+    environment:
+      MINIO_ROOT_USER: "minioadmin"
+      MINIO_ROOT_PASSWORD: "minioadminpassword"
+    command: server /data --console-address ":9090"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
+volumes:
+  sandbox_data:
+  minio_data:
