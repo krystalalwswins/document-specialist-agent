@@ -1,16 +1,21 @@
-import os
+"""Deprecated compatibility shim.
 
-# 云沙箱配置
-SANDBOX_BASE_URL = os.getenv("SANDBOX_BASE_URL", "http://localhost:8080")
-SANDBOX_WORKSPACE = "/home/gem/workspace"
+Use `from core.config import get_settings` in new code. This module keeps the
+original constant names working until the sandbox/agent modules are migrated,
+then it will be removed.
+"""
 
-# MinIO / OSS 对象存储配置
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadminpassword")
-MINIO_BUCKET_NAME = os.getenv("MINIO_BUCKET_NAME", "doc-agent-storage")
+from core.config import get_settings
 
-# 大模型 API 配置 (支持 OpenAI / DeepSeek 等)
-LLM_API_KEY = os.getenv("LLM_API_KEY", "your-api-key-here")
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
-LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
+_settings = get_settings()
+
+SANDBOX_BASE_URL = _settings.sandbox_base_url
+SANDBOX_WORKSPACE = _settings.sandbox_workspace
+SANDBOX_API_KEY = _settings.sandbox_api_key
+MINIO_ENDPOINT = _settings.minio_endpoint
+MINIO_ACCESS_KEY = _settings.minio_access_key
+MINIO_SECRET_KEY = _settings.minio_secret_key
+MINIO_BUCKET_NAME = _settings.minio_bucket_name
+LLM_API_KEY = _settings.llm_api_key
+LLM_BASE_URL = _settings.llm_base_url
+LLM_MODEL = _settings.llm_model
