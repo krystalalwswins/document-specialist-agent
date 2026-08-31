@@ -177,7 +177,7 @@ python -m pytest
 
 ## 7. 设计笔记索引
 
-每个模块交付时附 Design Note（模块作用 / 设计原因 / 核心流程 / 关键代码 / 面试回答），归档于 `docs/design/`。
+每个模块交付时附 Design Note，统一按 [TEMPLATE.md](docs/design/TEMPLATE.md) 的 10 小节模板编写，归档于 `docs/design/`。
 
 - [01_task_module.md](docs/design/01_task_module.md)：任务生命周期模块
 - [02_config_and_storage.md](docs/design/02_config_and_storage.md)：配置与对象存储模块
