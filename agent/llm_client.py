@@ -20,14 +20,19 @@ class LLMClient:
         client: Optional[Any] = None,
     ) -> None:
         self._settings = settings or get_settings()
-        self._client = client or OpenAI(
-            api_key=self._settings.llm_api_key,
-            base_url=self._settings.llm_base_url,
-        )
+        self._client = client
 
     @property
     def model(self) -> str:
         return self._settings.llm_model
+
+    def _ensure_client(self) -> Any:
+        if self._client is None:
+            self._client = OpenAI(
+                api_key=self._settings.llm_api_key,
+                base_url=self._settings.llm_base_url,
+            )
+        return self._client
 
     def chat(self, messages: list[dict[str, Any]], tools=None, tool_choice=None) -> Any:
         kwargs: dict[str, Any] = {"model": self.model, "messages": messages}
@@ -35,4 +40,4 @@ class LLMClient:
             kwargs["tools"] = tools
         if tool_choice is not None:
             kwargs["tool_choice"] = tool_choice
-        return self._client.chat.completions.create(**kwargs)
+        return self._ensure_client().chat.completions.create(**kwargs)
