@@ -173,7 +173,7 @@ docker compose up -d
 python -m pytest
 
 # 6. 端到端 Demo（需先设置 .env 的 LLM_API_KEY，并 docker compose up -d）
-python demo/run_demo.py
+python -m demo.run_demo
 
 # 7. 启动 API（另开终端；任务执行时才真正用到 LLM_API_KEY）
 .venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8000

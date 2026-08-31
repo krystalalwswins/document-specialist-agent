@@ -4,7 +4,7 @@ Prerequisites:
 1. docker compose up -d          (start sandbox + MinIO)
 2. .env with a valid LLM_API_KEY
 
-Run: .venv\\Scripts\\python.exe demo/run_demo.py
+Run: .venv\\Scripts\\python.exe -m demo.run_demo
 """
 
 from __future__ import annotations

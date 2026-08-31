@@ -127,13 +127,15 @@ def test_delete_file_uses_quoted_rm():
 def test_execute_python_normalizes_streams_and_results():
     client, sdk = _make()
     sdk.jupyter.response = SimpleNamespace(
-        status="ok",
-        outputs=[
-            _out("stream", name="stdout", text="hello\n"),
-            _out("stream", name="stderr", text="warn\n"),
-            _out("execute_result", data={"text/plain": "42"}),
-            _out("display_data", data={"text/plain": "chart"}),
-        ],
+        data=SimpleNamespace(
+            status="ok",
+            outputs=[
+                _out("stream", name="stdout", text="hello\n"),
+                _out("stream", name="stderr", text="warn\n"),
+                _out("execute_result", data={"text/plain": "42"}),
+                _out("display_data", data={"text/plain": "chart"}),
+            ],
+        )
     )
     result = client.execute_python("1+1")
     assert result.status == "ok"
@@ -148,15 +150,17 @@ def test_execute_python_normalizes_streams_and_results():
 def test_execute_python_normalizes_error():
     client, sdk = _make()
     sdk.jupyter.response = SimpleNamespace(
-        status="error",
-        outputs=[
-            _out(
-                "error",
-                ename="ZeroDivisionError",
-                evalue="division by zero",
-                traceback=["line1", "line2"],
-            )
-        ],
+        data=SimpleNamespace(
+            status="error",
+            outputs=[
+                _out(
+                    "error",
+                    ename="ZeroDivisionError",
+                    evalue="division by zero",
+                    traceback=["line1", "line2"],
+                )
+            ],
+        )
     )
     result = client.execute_python("1/0")
     assert result.status == "error"
@@ -167,9 +171,17 @@ def test_execute_python_normalizes_error():
 
 def test_execute_python_passes_timeout():
     client, sdk = _make()
-    sdk.jupyter.response = SimpleNamespace(status="ok", outputs=[])
+    sdk.jupyter.response = SimpleNamespace(data=SimpleNamespace(status="ok", outputs=[]))
     client.execute_python("sleep(10)", timeout=5)
     assert sdk.jupyter.calls[0]["timeout"] == 5
+
+
+def test_execute_python_handles_missing_data():
+    client, sdk = _make()
+    sdk.jupyter.response = SimpleNamespace(success=False, message="kernel died", data=None)
+    result = client.execute_python("boom")
+    assert result.status == "error"
+    assert result.error == "kernel died"
 
 
 def test_api_key_header(monkeypatch):

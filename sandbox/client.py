@@ -118,17 +118,23 @@ class SandboxClient:
             session_id=session_id,
             cwd=cwd,
         )
-        return self._normalize(resp)
+        data = getattr(resp, "data", None)
+        if data is None:
+            return ExecutionResult(
+                status="error",
+                error=getattr(resp, "message", None) or "no data",
+            )
+        return self._normalize(data)
 
     @staticmethod
-    def _normalize(resp: Any) -> ExecutionResult:
+    def _normalize(data: Any) -> ExecutionResult:
         stdout: list[str] = []
         stderr: list[str] = []
         outputs: list[str] = []
         error: Optional[str] = None
         traceback: Optional[str] = None
 
-        for out in resp.outputs or []:
+        for out in data.outputs or []:
             output_type = out.output_type
             if output_type == "stream":
                 text = out.text or ""
@@ -143,16 +149,16 @@ class SandboxClient:
                     error = out.evalue or out.ename or "unknown error"
                 traceback = "\n".join(out.traceback or []) or None
             elif output_type in ("execute_result", "display_data"):
-                data = out.data or {}
-                plain = data.get("text/plain")
-                outputs.append(str(plain) if plain is not None else str(data))
+                out_data = out.data or {}
+                plain = out_data.get("text/plain")
+                outputs.append(str(plain) if plain is not None else str(out_data))
 
         return ExecutionResult(
-            status=resp.status,
+            status=data.status,
             stdout="".join(stdout),
             stderr="".join(stderr),
             error=error,
             traceback=traceback,
             outputs=outputs,
-            raw=resp,
+            raw=data,
         )
