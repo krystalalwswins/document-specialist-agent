@@ -53,14 +53,9 @@
 
 markitdown 是文档处理 Agent 的核心能力来源，计划在 Phase 2 通过 MCP Tool Adapter 接入本项目的 Tool Registry，而不是让 LLM 手写文档解析代码。
 
-### 1.5 待实测项
+### 1.5 二进制文件方案（已实测确认）
 
-SDK 二进制写文件能力（xlsx 入沙箱）官方文档未明确，候选方案：
-
-- A：base64 文本写入 + 沙箱内解码
-- B：OSS presigned URL + 沙箱内下载
-
-实现 sandbox 模块时先跑最小验证脚本再定方案。
+直接读 SDK 源码确认：`file.write_file` 的 `encoding` 参数支持 `utf-8 / base64 / raw`，二进制文件统一 base64 写入；`file.download_file` 以字节流读出。另有 `str_replace_editor` 内置 Excel/PDF/PPTX 查看能力。方案 A（base64）为官方能力，无需 curl 下载。
 
 ---
 
@@ -145,7 +140,7 @@ document-specialist-agent/
 2. ✅ `core/config.py` + Storage 重构：去 import 副作用、lazy bucket、`.env` 加载（根目录 `config.py` / `storage_manager.py` 已降级为兼容 shim，待迁移后删除）
 3. ✅ `task/`：Task 模型 + TaskManager（内存实现 + 存储接口抽象，后续可换 Redis）
 4. `tools/`：BaseTool + ToolRegistry + sandbox/file/report 工具
-5. `sandbox/`：Hook 重构、二进制安全传输、统一输出解析
+5. ✅ `sandbox/`：Hook 重构、二进制安全传输（base64）、统一输出解析
 6. `agent/`：Planner（LLM 结构化计划）→ Executor（多轮 tool-calling 循环）→ Orchestrator
 7. 最小 API：FastAPI `POST /tasks`、`GET /tasks/{id}`
 
@@ -186,3 +181,4 @@ python -m pytest
 
 - [01_task_module.md](docs/design/01_task_module.md)：任务生命周期模块
 - [02_config_and_storage.md](docs/design/02_config_and_storage.md)：配置与对象存储模块
+- [03_sandbox_module.md](docs/design/03_sandbox_module.md)：沙箱集成层（SDK 封装 + 二进制安全 Hook）
