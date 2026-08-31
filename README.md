@@ -142,7 +142,7 @@ document-specialist-agent/
 4. ✅ `tools/`：BaseTool + ToolRegistry + sandbox/file/report 具体工具
 5. ✅ `sandbox/`：Hook 重构、二进制安全传输（base64）、统一输出解析
 6. ✅ `agent/`：Planner（LLM 结构化计划）→ Executor（多轮 tool-calling 循环）→ Orchestrator
-7. 最小 API：FastAPI `POST /tasks`、`GET /tasks/{id}`
+7. ✅ 最小 API：FastAPI `POST /tasks`、`GET /tasks/{id}`
 
 ### Phase 2 —— 工程增强
 
@@ -174,6 +174,9 @@ python -m pytest
 
 # 6. 端到端 Demo（需先设置 .env 的 LLM_API_KEY，并 docker compose up -d）
 python demo/run_demo.py
+
+# 7. 启动 API（另开终端；任务执行时才真正用到 LLM_API_KEY）
+.venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8000
 ```
 
 ---
@@ -187,3 +190,4 @@ python demo/run_demo.py
 - [03_sandbox_module.md](docs/design/03_sandbox_module.md)：沙箱集成层（SDK 封装 + 二进制安全 Hook）
 - [04_agent_module.md](docs/design/04_agent_module.md)：Agent 编排层（Planner / Executor / Orchestrator + tools 抽象）
 - [05_tools_integration.md](docs/design/05_tools_integration.md)：具体工具与组装（sandbox/file/report + wiring + demo）
+- [06_api_layer.md](docs/design/06_api_layer.md)：最小 API 层（FastAPI + 后台执行）
