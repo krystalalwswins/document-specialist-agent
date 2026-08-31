@@ -4,7 +4,31 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Optional
+
+
+class ErrorType(str, Enum):
+    """Classifies why a tool call failed, and whether it is retryable.
+
+    TRANSIENT         temporary infrastructure fault (network, 5xx, 429, cold start) -> retry
+    TIMEOUT           the operation timed out                                            -> retry (bounded)
+    INVALID_ARGUMENT  bad call arguments                                                 -> no retry (same args fail again)
+    PERMISSION_DENIED authorization failure                                              -> no retry (retry won't grant access)
+    EXECUTION         code ran but raised (e.g. NameError)                                -> no retry
+    BUSINESS          logic-level failure (no result, wrong file)                         -> no retry
+    """
+
+    TRANSIENT = "TRANSIENT"
+    TIMEOUT = "TIMEOUT"
+    INVALID_ARGUMENT = "INVALID_ARGUMENT"
+    PERMISSION_DENIED = "PERMISSION_DENIED"
+    EXECUTION = "EXECUTION"
+    BUSINESS = "BUSINESS"
+
+    @property
+    def retryable(self) -> bool:
+        return self in (ErrorType.TRANSIENT, ErrorType.TIMEOUT)
 
 
 class ToolError(Exception):
@@ -16,6 +40,7 @@ class ToolResult:
     success: bool
     output: str = ""
     error: Optional[str] = None
+    error_type: Optional[ErrorType] = None
 
     def to_text(self) -> str:
         """Human-readable text to feed back to the LLM."""

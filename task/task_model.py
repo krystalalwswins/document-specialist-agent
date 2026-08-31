@@ -82,6 +82,7 @@ class TaskStep:
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     duration_ms: Optional[int] = None
+    attempts: int = 1
 
     _ALLOWED_TRANSITIONS = {
         StepStatus.PENDING: {StepStatus.RUNNING},
@@ -123,6 +124,7 @@ class TaskStep:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "duration_ms": self.duration_ms,
+            "attempts": self.attempts,
         }
 
     @classmethod
@@ -137,6 +139,7 @@ class TaskStep:
             started_at=data.get("started_at"),
             finished_at=data.get("finished_at"),
             duration_ms=data.get("duration_ms"),
+            attempts=data.get("attempts", 1),
         )
 
 

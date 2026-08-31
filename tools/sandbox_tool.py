@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from sandbox.client import SandboxClient
-from tools.base_tool import BaseTool, ToolResult
+from tools.base_tool import BaseTool, ErrorType, ToolResult
 
 
 class SandboxTool(BaseTool):
@@ -29,8 +29,10 @@ class SandboxTool(BaseTool):
         result = self._client.execute_python(code, timeout=timeout)
         if result.status == "ok":
             return ToolResult(success=True, output=result.text)
+        error_type = ErrorType.TIMEOUT if result.status == "timeout" else ErrorType.EXECUTION
         return ToolResult(
             success=False,
             output=result.text,
             error=result.error or result.status,
+            error_type=error_type,
         )

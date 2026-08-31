@@ -34,9 +34,6 @@ class ReportTool(BaseTool):
         }
 
     def execute(self, sandbox_filename: str, oss_key: str) -> ToolResult:
-        try:
-            data = self._client.read_bytes_file(sandbox_filename)
-            url = self._storage.upload_file_content(oss_key, data)
-        except Exception as exc:
-            return ToolResult(success=False, error=str(exc))
+        data = self._client.read_bytes_file(sandbox_filename)
+        url = self._storage.upload_file_content(oss_key, data)
         return ToolResult(success=True, output=url)

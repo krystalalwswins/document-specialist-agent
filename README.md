@@ -147,7 +147,7 @@ document-specialist-agent/
 ### Phase 2 —— 工程增强
 
 - `memory/`：短期（任务上下文）+ 长期（历史任务），Redis
-- `retry/`：工具失败自动重试策略
+- ✅ `retry/`：工具失败自动重试策略（ErrorType + RetryPolicy + Executor 集成）
 - `security/`：工具/文件/危险命令权限控制
 - `evaluation/`：成功率、工具调用次数、耗时、Token 消耗
 - `tools/mcp_adapter.py`：接入沙箱预置 MCP server（markitdown / file / shell）

@@ -144,3 +144,16 @@ class TaskManager:
             step.fail(error)
             self._store.update(task)
         return step
+
+    def set_step_attempts(self, task_id: str, step_id: str, attempts: int) -> None:
+        with self._lock:
+            task = self._store.get(task_id)
+            step = task.get_step(step_id)
+            step.attempts = attempts
+            self._store.update(task)
+
+    def add_metric_events(self, task_id: str, key: str, events: list[dict[str, Any]]) -> None:
+        with self._lock:
+            task = self._store.get(task_id)
+            task.metrics.setdefault(key, []).extend(events)
+            self._store.update(task)

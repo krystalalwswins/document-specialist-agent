@@ -28,8 +28,5 @@ class FileTool(BaseTool):
         }
 
     def execute(self, filename: str) -> ToolResult:
-        try:
-            content = self._client.read_text_file(filename)
-        except Exception as exc:
-            return ToolResult(success=False, error=str(exc))
+        content = self._client.read_text_file(filename)
         return ToolResult(success=True, output=content)
