@@ -29,7 +29,7 @@ class ExecutionResult:
     """Normalized, SDK-agnostic result of running code in the sandbox."""
 
     status: str  # ok / error / timeout
-    stdout: str = ""
+    stdout: str = "" #
     stderr: str = ""
     error: Optional[str] = None
     traceback: Optional[str] = None
@@ -118,23 +118,17 @@ class SandboxClient:
             session_id=session_id,
             cwd=cwd,
         )
-        data = getattr(resp, "data", None)
-        if data is None:
-            return ExecutionResult(
-                status="error",
-                error=getattr(resp, "message", None) or "no data",
-            )
-        return self._normalize(data)
+        return self._normalize(resp)
 
     @staticmethod
-    def _normalize(data: Any) -> ExecutionResult:
+    def _normalize(resp: Any) -> ExecutionResult:
         stdout: list[str] = []
         stderr: list[str] = []
         outputs: list[str] = []
         error: Optional[str] = None
         traceback: Optional[str] = None
 
-        for out in data.outputs or []:
+        for out in resp.outputs or []:
             output_type = out.output_type
             if output_type == "stream":
                 text = out.text or ""
@@ -149,16 +143,16 @@ class SandboxClient:
                     error = out.evalue or out.ename or "unknown error"
                 traceback = "\n".join(out.traceback or []) or None
             elif output_type in ("execute_result", "display_data"):
-                out_data = out.data or {}
-                plain = out_data.get("text/plain")
-                outputs.append(str(plain) if plain is not None else str(out_data))
+                data = out.data or {}
+                plain = data.get("text/plain")
+                outputs.append(str(plain) if plain is not None else str(data))
 
         return ExecutionResult(
-            status=data.status,
+            status=resp.status,
             stdout="".join(stdout),
             stderr="".join(stderr),
             error=error,
             traceback=traceback,
             outputs=outputs,
-            raw=data,
+            raw=resp,
         )
