@@ -10,6 +10,9 @@ from tools.base_tool import BaseTool, ToolResult
 
 class FileTool(BaseTool):
     name = "read_file"
+    retry_safe = True
+    required_permissions = frozenset({"file.read"})
+    file_parameters = ("filename",)
     description = "Read the text content of a file in the sandbox workspace."
 
     def __init__(self, client: SandboxClient) -> None:
@@ -18,6 +21,7 @@ class FileTool(BaseTool):
     def parameters_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "filename": {
                     "type": "string",

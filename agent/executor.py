@@ -4,18 +4,23 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from agent.llm_client import LLMClient
 from agent.planner import Plan
-from retry.retry_policy import RetryPolicy, classify_exception
+from retry.retry_policy import RetryDecision, RetryPolicy, classify_exception
 from task.task_manager import TaskManager
-from tools.base_tool import ToolResult
+from tools.base_tool import ErrorType, ToolResult
 from tools.tool_registry import ToolRegistry
 
 
 class MaxIterationsError(Exception):
     """Raised when the tool-calling loop exceeds max_iterations."""
+
+
+class UnsafeExecutionStateError(Exception):
+    """Do not let the model replay code after timeout or uncertain cleanup."""
 
 
 class Executor:
@@ -54,15 +59,17 @@ class Executor:
                 return message.content or ""
 
             for call in message.tool_calls:
-                arguments = json.loads(call.function.arguments or "{}")
                 step = self._task_manager.add_step(task_id, call.function.name, tool=call.function.name)
                 self._task_manager.start_step(task_id, step.id)
+                try:
+                    arguments = json.loads(call.function.arguments or "{}")
+                except (ValueError, TypeError):
+                    arguments = None  # Registry produces INVALID_ARGUMENT without invoking a tool.
 
-                result, events, attempts = self._invoke_tool(
-                    task_id, call.function.name, arguments
+                result, _, attempts = self._invoke_tool(
+                    task_id, call.function.name, arguments, step_id=step.id, tool_call_id=call.id,
                 )
                 self._task_manager.set_step_attempts(task_id, step.id, attempts)
-                self._record_retry_events(task_id, events)
 
                 if result.success:
                     self._task_manager.succeed_step(task_id, step.id, output=result.output)
@@ -70,6 +77,8 @@ class Executor:
                     self._task_manager.fail_step(
                         task_id, step.id, error=result.error or "unknown error"
                     )
+                if result.terminal:
+                    raise UnsafeExecutionStateError(result.error or "unsafe sandbox execution state")
                 content = result.to_text()
 
                 messages.append(
@@ -79,11 +88,26 @@ class Executor:
         raise MaxIterationsError(f"exceeded {self._max_iterations} tool-calling iterations")
 
     def _invoke_tool(
-        self, task_id: str, name: str, arguments: dict[str, Any]
+        self, task_id: str, name: str, arguments: Any,
+        *, step_id: str | None = None, tool_call_id: str | None = None,
     ) -> tuple[ToolResult, list[dict[str, Any]], int]:
         events: list[dict[str, Any]] = []
         attempt = 0
         result: ToolResult
+
+        def record(event: dict[str, Any]) -> None:
+            event.update(step_id=step_id, tool_call_id=tool_call_id)
+            events.append(event)
+            # Write after each attempt, before backoff; batch 2 replaces the in-memory store.
+            self._record_retry_events(task_id, [event])
+            if step_id is not None:
+                self._task_manager.set_step_attempts(task_id, step_id, attempt)
+            if event["error_type"] == ErrorType.PERMISSION_DENIED.value:
+                self._task_manager.add_metric_events(task_id, "security_events", [{
+                    "task_id": task_id, "step_id": step_id, "tool_call_id": tool_call_id,
+                    "tool_name": name, "decision": "DENIED", "reason": "permission_denied",
+                    "occurred_at": event["occurred_at"],
+                }])
 
         while True:
             attempt += 1
@@ -95,18 +119,21 @@ class Executor:
             except Exception as exc:
                 error_type = classify_exception(exc)
                 error_message = str(exc)
-                result = ToolResult(success=False, error=error_message, error_type=error_type)
+                result = ToolResult(success=False, error=error_message, error_type=error_type, terminal=getattr(exc, "terminal", False))
 
             duration_ms = int((time.monotonic() - started) * 1000)
 
             if result.success:
-                events.append(
+                record(
                     self._make_event(task_id, name, attempt, None, None, "success", duration_ms, "SUCCESS")
                 )
                 return result, events, attempt
 
-            decision = self._retry_policy.decide(attempt, error_type)
-            events.append(
+            decision = (
+                RetryDecision(False, 0, "execution_state_unknown", True) if result.terminal
+                else self._retry_policy.decide(attempt, error_type, retry_safe=self._registry.retry_safe(name))
+            )
+            record(
                 self._make_event(
                     task_id,
                     name,
@@ -140,6 +167,7 @@ class Executor:
         final_status: str,
     ) -> dict[str, Any]:
         return {
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
             "task_id": task_id,
             "tool_name": tool_name,
             "attempt": attempt,

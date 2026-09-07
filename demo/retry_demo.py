@@ -17,6 +17,7 @@ from tools.tool_registry import ToolRegistry
 
 
 class FlakyTool(BaseTool):
+    retry_safe = True  # Fake operation has no side effects.
     name = "flaky"
     description = "fails once then succeeds"
 
@@ -34,6 +35,7 @@ class FlakyTool(BaseTool):
 
 
 class AlwaysFailTool(BaseTool):
+    retry_safe = True  # Fake operation has no side effects.
     name = "always_fail"
     description = "always fails transiently"
 

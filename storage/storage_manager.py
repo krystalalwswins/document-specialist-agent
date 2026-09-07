@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 import boto3
 from botocore.exceptions import ClientError
+from botocore.config import Config
 
 from core.config import Settings, get_settings
 
@@ -40,6 +41,7 @@ class StorageManager:
             aws_access_key_id=self._settings.minio_access_key,
             aws_secret_access_key=self._settings.minio_secret_key,
             region_name="us-east-1",
+            config=Config(connect_timeout=10, read_timeout=30, retries={"total_max_attempts": 1}),
         )
 
     def ensure_bucket(self) -> None:

@@ -12,6 +12,7 @@ from tools.tool_registry import ToolRegistry
 
 
 class FlakyTool(BaseTool):
+    retry_safe = True  # Fake operation has no side effects.
     name = "flaky"
     description = "fails once then succeeds"
 
@@ -29,6 +30,7 @@ class FlakyTool(BaseTool):
 
 
 class AlwaysFailTool(BaseTool):
+    retry_safe = True  # Fake operation has no side effects.
     name = "always_fail"
     description = "always fails transiently"
 
@@ -62,6 +64,7 @@ class PermissionTool(BaseTool):
 
 
 class RaisingTool(BaseTool):
+    retry_safe = True  # Fake operation has no side effects.
     name = "raising"
     description = "raises a connection error"
 
@@ -120,7 +123,7 @@ def test_error_type_retryable():
 def test_classify_exception():
     assert classify_exception(TimeoutError("t")) == ErrorType.TIMEOUT
     assert classify_exception(ConnectionError("c")) == ErrorType.TRANSIENT
-    assert classify_exception(ValueError("v")) == ErrorType.BUSINESS
+    assert classify_exception(ValueError("v")) == ErrorType.INVALID_ARGUMENT
 
 
 def test_policy_retryable_and_non_retryable():

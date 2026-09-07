@@ -1,6 +1,6 @@
 # === Runtime ===
 # AIO Sandbox Python SDK (official: Python 3.8+, local: 3.13.2; latest on PyPI is 0.0.30)
-agent-sandbox>=0.0.30
+agent-sandbox==0.0.30
 # Object storage (MinIO / S3-compatible)
 boto3>=1.34.0
 # LLM client (OpenAI-compatible, e.g. DeepSeek)
@@ -12,6 +12,7 @@ pydantic-settings>=2.0.0
 # API layer (Phase 1 Step 7)
 fastapi>=0.110.0
 uvicorn>=0.29.0
+jsonschema>=4.18,<5
 
 # === Dev ===
 pytest>=8.0.0

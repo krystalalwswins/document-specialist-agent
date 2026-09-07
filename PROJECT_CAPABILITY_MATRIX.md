@@ -1,5 +1,7 @@
 # PROJECT CAPABILITY MATRIX —— Document Specialist Agent
 
+> 2026-09-07 更新：以下早期能力统计保留作历史参考。最新能力状态、真实验证证据和限制见 [第一批验证记录](docs/verification/01_security.md)，后续范围以 [交付计划](docs/DELIVERY_PLAN.md) 为准。Security 代码与离线验证已完成，真实沙箱验收待完成。
+
 > 一句话定位：从“能跑通的 demo 脚本”升级为**有任务生命周期、工具注册表、计划-执行循环的 Agent 运行时**；沙箱作为隔离执行层，对象存储作为结果层。
 >
 > 基于 [agent-infra/sandbox](https://github.com/agent-infra/sandbox)（AIO Sandbox，v1.11.0 / Python SDK 0.0.30）二次开发。
@@ -36,7 +38,7 @@
 | 单元测试 | 13 文件 / 79 用例，全离线 | ✅ | `tests/` | `pytest -q`：79 passed | fake LLM/SDK/S3，无外部依赖 |
 | 设计文档 | 8 篇，统一 10 小节模板 | ✅ | `docs/design/` | 人工评审 | 先评审后实现（07 评审 → 08 实现） |
 | 二进制持久化 | docker-compose 卷持久化 + API key + host-gateway | ✅ | `docker-compose.yaml` | 本地 docker 验证 | 与官方推荐的 pin 镜像对齐 |
-| 权限/安全层 | 命令/文件/危险操作白名单 | ⬜ Phase 2 | `security/`（未建） | — | 当前依赖沙箱隔离本身 |
+| 权限/安全层 | 工具/文件/对象前缀权限，独立会话与超时 | IN_PROGRESS | `security/`、Registry、SandboxClient | 离线已验证，真机待验证 | 任意 Python 仍以容器为边界 |
 | 评估体系 | 成功率/耗时/Token 统计 | ⬜ Phase 2 | `evaluation/`（未建，`metrics` 已预留） | — | 字段已预留，接上即可 |
 | Memory | 短期（任务上下文）+ 长期（历史任务） | ⬜ Phase 2 | `memory/`（未建） | — | 计划 Redis |
 | MCP 接入 | markitdown（文档解析核心能力） | ⬜ Phase 2 | `tools/mcp_adapter.py`（未建） | — | 文档 Agent 的核心能力来源 |

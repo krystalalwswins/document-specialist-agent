@@ -10,17 +10,20 @@ from tools.base_tool import BaseTool, ErrorType, ToolResult
 
 class SandboxTool(BaseTool):
     name = "run_python"
+    required_permissions = frozenset({"sandbox.execute"})
     description = "Execute Python code in the isolated sandbox and return stdout/result/error."
 
-    def __init__(self, client: SandboxClient) -> None:
+    def __init__(self, client: SandboxClient, max_timeout: int = 120) -> None:
         self._client = client
+        self._max_timeout = max_timeout
 
     def parameters_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
-                "code": {"type": "string", "description": "Python code to execute"},
-                "timeout": {"type": "integer", "description": "execution timeout in seconds"},
+                "code": {"type": "string", "minLength": 1, "description": "Python code in a fresh session; exchange state through workspace files."},
+                "timeout": {"type": "integer", "minimum": 1, "maximum": self._max_timeout, "description": "execution timeout in seconds"},
             },
             "required": ["code"],
         }
@@ -35,4 +38,5 @@ class SandboxTool(BaseTool):
             output=result.text,
             error=result.error or result.status,
             error_type=error_type,
+            terminal=result.execution_uncertain or result.status == "timeout",
         )

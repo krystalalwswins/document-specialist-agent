@@ -41,6 +41,7 @@ class ToolResult:
     output: str = ""
     error: Optional[str] = None
     error_type: Optional[ErrorType] = None
+    terminal: bool = False  # Unsafe/unknown execution state: stop the task, not just this step.
 
     def to_text(self) -> str:
         """Human-readable text to feed back to the LLM."""
@@ -54,6 +55,10 @@ class BaseTool(ABC):
 
     name: str
     description: str
+    retry_safe: bool = False  # Explicit opt-in; unknown side effects must not be replayed.
+    required_permissions: frozenset[str] = frozenset()
+    file_parameters: tuple[str, ...] = ()
+    object_key_parameters: tuple[str, ...] = ()
 
     @abstractmethod
     def parameters_schema(self) -> dict[str, Any]:

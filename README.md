@@ -1,8 +1,12 @@
 # Document Specialist Agent
 
-企业级智能任务执行 Agent 平台 —— 基于 [agent-infra/sandbox](https://github.com/agent-infra/sandbox)（AIO Sandbox）二次开发。
+面向文档处理与代码执行的 Agent Runtime 原型 —— 基于 [agent-infra/sandbox](https://github.com/agent-infra/sandbox)（AIO Sandbox）二次开发。
 
 一句话定位：从“能跑通的 demo 脚本”升级为**有任务生命周期、工具注册表、计划-执行循环的 Agent 运行时**；沙箱作为隔离执行层，对象存储作为结果层。
+
+当前交付依据：[简历对标与五批计划](docs/DELIVERY_PLAN.md)。第一批 Retry/Security 的代码与离线验证已完成，真实 Docker 验收待完成；详见 [验证记录](docs/verification/01_security.md) 和 [Design Note](docs/design/10_security_module.md)。
+
+开发定位：单用户本地原型。当前共享容器/文件系统、内存任务记录、未鉴权 API；尚未完成恶意多租户隔离和持久化执行轨迹。
 
 ---
 
@@ -24,7 +28,7 @@
 
 - Python SDK 官方要求 **Python 3.8+**；本机默认 base 环境是 3.7.0，不满足，已迁移。
 - 环境决策（2026-08-30 实测）：使用 **Python 3.13.2**（`C:\Users\Administrator\AppData\Local\Programs\Python\Python313\python.exe`）创建项目 venv（`.venv`）；3.11.9 作为兼容性回退。
-- PyPI 上 `agent-sandbox` 最新版本为 **0.0.30**（原 requirements 中的 `>=0.1.0` 不存在，已修正为 `>=0.0.30`）。
+- 当前适配并锁定 `agent-sandbox==0.0.30`，接口以该版本为准。
 - 客户端形态：`Sandbox`（同步）与 `AsyncSandbox`（异步）两种。
 - 当前代码使用的 API 与官方 README 一致，未用过时接口：
 
@@ -41,11 +45,11 @@
 
 本项目 docker-compose 使用的镜像 `enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:1.11.0` 是官方对中国大陆用户推荐的 pin 版本；`seccomp:unconfined`、`shm_size: 2gb`、`127.0.0.1:8080` 端口绑定均与官方一致。
 
-与官方 compose 相比，本项目待补齐：
+当前 compose 已配置工作区卷、`SANDBOX_API_KEY` 环境变量和 host-gateway。API key 留空仍不开启鉴权，使用时需自行设置。
 
-1. `volumes: sandbox_data:/home/gem/workspace` —— 沙箱工作区持久化（当前容器重启即丢状态）
-2. `SANDBOX_API_KEY` —— 官方推荐开启，保护 API / JupyterLab / VNC（当前完全开放）
-3. `extra_hosts: host.docker.internal:host-gateway` —— 沙箱内访问宿主机（MinIO 互通需要）
+本批增加 CPU、总内存、swap 和 PID 限制，MinIO 端口绑定本机。`shm_size` 只配置共享内存，不代表总内存上限。配置实际生效需运行 `python -m demo.security_smoke` 验证。
+
+保留上游的 `seccomp:unconfined`，这是开发容器，不能据此宣称完全抵御恶意代码或限制其所有网络访问。
 
 ### 1.4 可复用能力（对文档处理定位）
 
@@ -61,11 +65,11 @@ markitdown 是文档处理 Agent 的核心能力来源，计划在 Phase 2 通�
 
 ## 2. 当前代码评估摘要
 
-（基于 2026-08-30 实际代码审查）
+当前代码已具备任务/步骤状态机、三层编排、多轮 Tool Calling、三个可插拔工具、二进制传输和工具重试。
 
-- 现状：单轮脚本 —— LLM 调用一次、工具结果不回传，无法多步推理；无任务生命周期、无工具注册表、无重试/权限/观测。
-- 主要问题：import 即触发存储初始化；文件传输按 UTF-8 解码，xlsx 必炸；沙箱输出解析不完整；print 日志无任务维度。
-- 保留价值：OSS ↔ Sandbox ↔ LLM 垂直链路真实可演示；Pre/Post Hook 设计正确；docker-compose 本地一键环境。
+第一批补齐异常分类、重放安全声明、参数校验、工具/路径权限、拒绝审计、执行超时上限和独立 Jupyter 会话清理，同时修正了 SDK 响应 envelope 解析。任务持久化、产物达标校验和 Memory/Evaluation 仍按交付计划推进。
+
+Python 每次调用使用新 session，跨调用状态请保存为工作区文件。超时或执行状态不确定时终止当前任务，不让模型继续重放代码。独立 session 不隔离共享文件系统。
 
 ---
 
@@ -148,7 +152,7 @@ document-specialist-agent/
 
 - `memory/`：短期（任务上下文）+ 长期（历史任务），Redis
 - ✅ `retry/`：工具失败自动重试策略（ErrorType + RetryPolicy + Executor 集成）
-- `security/`：工具/文件/危险命令权限控制
+- `security/`：工具/文件/对象前缀权限已实现并离线验证；真实沙箱验收待完成，不提供任意 Python 命令黑名单保证
 - `evaluation/`：成功率、工具调用次数、耗时、Token 消耗
 - `tools/mcp_adapter.py`：接入沙箱预置 MCP server（markitdown / file / shell）
 
@@ -191,3 +195,20 @@ python -m demo.run_demo
 - [04_agent_module.md](docs/design/04_agent_module.md)：Agent 编排层（Planner / Executor / Orchestrator + tools 抽象）
 - [05_tools_integration.md](docs/design/05_tools_integration.md)：具体工具与组装（sandbox/file/report + wiring + demo）
 - [06_api_layer.md](docs/design/06_api_layer.md)：最小 API 层（FastAPI + 后台执行）
+
+- [07_retry_design_review.md](docs/design/07_retry_design_review.md)：历史重试评审
+- [08_retry_module.md](docs/design/08_retry_module.md)：历史重试实现
+- [09_security_design_review.md](docs/design/09_security_design_review.md)：第一批设计评审
+- [10_security_module.md](docs/design/10_security_module.md)：第一批实现与面试说明
+
+## 8. 第一批验证
+
+```bash
+python -m pytest -q
+python -m demo.retry_demo
+python -m demo.security_demo
+# 需启动 Docker 沙箱，不需要 LLM key；退出 2 表示未验证
+python -m demo.security_smoke
+```
+
+工作区路径检查同时用于 Hook 和工具；生产装配可通过 `.env` 中的 JSON 数组 `ALLOWED_TOOLS` / `ALLOWED_PERMISSIONS` 控制模型可用工具。新增工具默认不自动重试，只有可安全重放时才声明 `retry_safe = True`。

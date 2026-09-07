@@ -1,6 +1,8 @@
 # PROJECT PROGRESS —— 真实进度记录
 
-> 更新：2026-09-01
+> 更新：2026-09-07
+> 本轮状态以 [第一批验证记录](verification/01_security.md) 为准：基线复测 75 通过 / 4 失败；第一批修复并新增安全回归。代码和离线验证完成，真实 Docker 验收待完成，Security 保持 IN_PROGRESS。
+> 后续实施顺序以 [已确认交付计划](DELIVERY_PLAN.md) 为准。以下早期统计及 DONE 标签保留作历史记录，不代表本轮重新完成真机验证。
 > 状态图例：**DONE**（已实现并验证）/ **IN_PROGRESS**（正在实现）/ **PLANNED**（尚未实现）/ **DEFERRED**（暂时不做）
 
 ---
@@ -36,7 +38,7 @@
 | 13 | 设计文档（8 篇 10 小节模板） | DONE |
 | 14 | 三份策略文档（Final Spec / Progress / Resume Material） | DONE（本文档） |
 | 15 | 文档与代码同步（README 1.3"待补齐"描述已过期） | IN_PROGRESS |
-| 16 | Permission / Security 层 | PLANNED |
+| 16 | Permission / Security 层 | IN_PROGRESS（代码和离线验证完成，真机待验收） |
 | 17 | Short-term Memory（上下文/截断/摘要） | PLANNED |
 | 18 | Result Validator + 任务级 Recovery | PLANNED |
 | 19 | Redis TaskStore + 持久化任务队列 | PLANNED |

@@ -14,6 +14,7 @@ from tools.file_tool import FileTool
 from tools.report_tool import ReportTool
 from tools.sandbox_tool import SandboxTool
 from tools.tool_registry import ToolRegistry
+from security.permission_manager import PermissionManager
 
 
 def build_orchestrator(settings: Settings | None = None) -> AgentOrchestrator:
@@ -22,10 +23,15 @@ def build_orchestrator(settings: Settings | None = None) -> AgentOrchestrator:
     sandbox = SandboxClient(settings)
     storage = StorageManager(settings)
 
-    registry = ToolRegistry()
-    registry.register(SandboxTool(sandbox))
+    registry = ToolRegistry(PermissionManager(
+        workspace=settings.sandbox_workspace,
+        report_prefix=settings.report_prefix,
+        allowed_tools=frozenset(settings.allowed_tools),
+        allowed_permissions=frozenset(settings.allowed_permissions),
+    ))
+    registry.register(SandboxTool(sandbox, max_timeout=settings.sandbox_max_timeout))
     registry.register(FileTool(sandbox))
-    registry.register(ReportTool(sandbox, storage))
+    registry.register(ReportTool(sandbox, storage, report_prefix=settings.report_prefix))
 
     task_manager = TaskManager()
     llm = LLMClient(settings)

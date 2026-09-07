@@ -48,9 +48,19 @@ class FakeJupyter:
     def __init__(self):
         self.calls = []
         self.response = None
+        self.created = []
+        self.deleted = []
+
+    def create_session(self, session_id, cwd=None, **kwargs):
+        self.created.append(session_id)
+        return SimpleNamespace(success=True, data=SimpleNamespace(session_id=session_id))
+
+    def delete_session(self, session_id, **kwargs):
+        self.deleted.append(session_id)
+        return SimpleNamespace(success=True)
 
     def execute_code(self, code, timeout=None, session_id=None, cwd=None, **kwargs):
-        self.calls.append({"code": code, "timeout": timeout, "cwd": cwd})
+        self.calls.append({"code": code, "timeout": timeout, "cwd": cwd, "session_id": session_id, **kwargs})
         return self.response
 
 
@@ -119,7 +129,7 @@ def test_read_bytes_file_joins_chunks():
 def test_delete_file_uses_quoted_rm():
     client, sdk = _make()
     client.delete_file("my file.txt")
-    command = sdk.shell.commands[0]
+    command = sdk.shell.commands[-1]
     assert command.startswith("rm -f")
     assert "/home/gem/workspace/my file.txt" in command
 
