@@ -13,7 +13,15 @@
 
 ## 后续增量
 
-增加了轨迹深拷贝修正、token 记录测试和可选真实 MCP HTTP 协议回环测试。本地 `python -m unittest discover -s tests -p test_learning_runtime.py -q`：24 项通过。新增协议测试需要 requirements-mcp.txt，后续完整 CI 结果会追加到本文件。
+增加了轨迹深拷贝修正、token 记录测试和真实 MCP HTTP 协议回环测试。本地 `python -m unittest discover -s tests -p test_learning_runtime.py -q`：24 项通过。
+
+最终代码提交：`98e8895039c429248dd69ac8ae947d148ab9d206`。
+
+- [最终完整 CI：34184363319](https://github.com/krystalalwswins/document-specialist-agent/actions/runs/34184363319)，结论 SUCCESS。
+- `python -m pytest -q`：**162 passed，3 warnings，9 subtests passed，4.30 秒**。
+- `tests/test_mcp_parser.py::test_real_mcp_http_parser_roundtrip` 实际启动独立本机 MCP 服务，完成 initialize/list_tools/call_tool 与 CSV 解析，并验证不存在的工具被拒绝。不是协议替身。
+- 离线学习 demo 和 3/3 固定评估场景再次通过。
+- 3 条警告来自依赖弃用提示；无失败或跳过。此后提交仅追加本文验证记录，运行代码与受测提交相同。
 
 ## 验证边界
 
