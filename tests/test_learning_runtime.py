@@ -231,6 +231,24 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(report['usage_missing_calls'], 1)
         self.assertEqual(report['known_total_tokens'], 10)
 
+    def test_llm_usage_recording(self):
+        from agent.llm_client import LLMClient
+        task = self.manager.create_task('tokens')
+        response = SimpleNamespace(usage=SimpleNamespace(prompt_tokens=8, completion_tokens=2, total_tokens=10))
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kwargs: response)))
+        settings = SimpleNamespace(llm_model='fixture', llm_timeout_seconds=10)
+        with run_scope(RunContext(task.id, self.manager, time.monotonic() + 10, 2)):
+            LLMClient(settings, client).chat([{'role': 'user', 'content': 'test'}])
+        self.assertEqual(self.manager.get_task(task.id).metrics['llm_events'][0]['total_tokens'], 10)
+
+    def test_event_payload_is_a_snapshot(self):
+        manager = TaskManager()
+        task = manager.create_task('trace')
+        messages = [{'role': 'user', 'content': 'initial'}]
+        manager.add_metric_events(task.id, 'requests', [{'messages': messages}])
+        messages.append({'role': 'assistant', 'content': 'later'})
+        self.assertEqual(len(manager.get_task(task.id).metrics['requests'][0]['messages']), 1)
+
     def test_fixed_evaluation_cases(self):
         self.assertEqual(evaluate()['pass_rate'], 1.0)
 

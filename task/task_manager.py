@@ -7,6 +7,7 @@ implementation with Redis / a database without touching callers.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from contextlib import contextmanager, nullcontext
 from threading import RLock
 from typing import Any, Optional
@@ -193,7 +194,7 @@ class TaskManager:
             task = self._store.get(task_id)
             destination = task.metrics.setdefault(key, [])
             for event in events:
-                event = dict(event)
+                event = deepcopy(event)
                 event.setdefault('task_id', task_id)
                 event.setdefault('occurred_at', _utc_now_iso())
                 event.setdefault('sequence', len(destination) + 1)

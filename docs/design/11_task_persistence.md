@@ -1,5 +1,7 @@
 # 任务持久化：先做能读懂的版本
 
+> 本文记录持久化的第一版设计。当前已补充 SQLite 队列、worker、预算与显式中断恢复；最新行为见 [学习指南](../LEARNING_GUIDE.md)，下文未完成项属于当时状态。
+
 ## 目标
 
 服务重启后还能查询任务、步骤、计划、结果和已有调用重试记录。沿用 Task → TaskManager → TaskStore 三层；新增 SQLiteTaskStore，不引入 ORM、Redis 或分布式队列。

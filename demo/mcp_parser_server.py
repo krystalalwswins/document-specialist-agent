@@ -1,9 +1,10 @@
 """Optional local MCP server: pip install -r requirements-mcp.txt first."""
 import json
+import os
 from mcp.server.fastmcp import FastMCP
 from documents.files import decode_inputs, inspect_document
 
-server = FastMCP('document-parser', host='127.0.0.1', port=8001)
+server = FastMCP('document-parser', host='127.0.0.1', port=int(os.environ.get('MCP_PARSER_PORT', '8001')))
 
 
 @server.tool()

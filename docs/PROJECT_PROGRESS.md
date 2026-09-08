@@ -1,9 +1,7 @@
 # PROJECT PROGRESS —— 真实进度记录
 
-> 更新：2026-09-07
-> 本轮状态以 [第一批验证记录](verification/01_security.md) 为准：基线复测 75 通过 / 4 失败；第一批修复并新增安全回归。代码和离线验证完成，真实 Docker 验收待完成，Security 保持 IN_PROGRESS。
-> 后续实施顺序以 [已确认交付计划](DELIVERY_PLAN.md) 为准。以下早期统计及 DONE 标签保留作历史记录，不代表本轮重新完成真机验证。
-> 状态图例：**DONE**（已实现并验证）/ **IN_PROGRESS**（正在实现）/ **PLANNED**（尚未实现）/ **DEFERRED**（暂时不做）
+> 更新：2026-09-08。学习版功能链路已补齐，最新能力见 [能力矩阵](../PROJECT_CAPABILITY_MATRIX.md)，证据见 [学习版验证记录](verification/02_learning_runtime.md)。SEC-001 继续延期，真实集成验收仍单独记录。
+> 以下早期阶段统计仅为历史记录，学习当前版本请从 [学习指南](LEARNING_GUIDE.md) 开始。
 
 ---
 
