@@ -27,3 +27,8 @@ htmlcov/
 # 操作系统
 Thumbs.db
 .DS_Store
+
+# Local task database (may contain user document content)
+data/
+*.sqlite3
+*.sqlite3-journal

@@ -20,6 +20,10 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # SQLite is built into Python; no extra database service is required.
+    max_concurrent_tasks: int = Field(default=4, ge=1, le=32)
+    task_db_path: str = "data/tasks.sqlite3"
+
     # AIO Sandbox
     sandbox_base_url: str = "http://localhost:8080"
     sandbox_workspace: str = "/home/gem/workspace"

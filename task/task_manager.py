@@ -7,14 +7,19 @@ implementation with Redis / a database without touching callers.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import contextmanager, nullcontext
 from threading import RLock
 from typing import Any, Optional
 
-from .task_model import Task, TaskError, TaskNotFoundError, TaskStep
+from .task_model import Task, TaskError, TaskNotFoundError, TaskStep, _utc_now_iso
 
 
 class TaskStore(ABC):
     """Persistence contract for tasks (memory / Redis / DB in later phases)."""
+
+    def transaction(self):
+        """Override when a backend supports atomic read-modify-write."""
+        return nullcontext()
 
     @abstractmethod
     def create(self, task: Task) -> None:
@@ -63,6 +68,11 @@ class InMemoryTaskStore(TaskStore):
                 raise TaskNotFoundError(task.id)
             self._tasks[task.id] = task
 
+    @contextmanager
+    def transaction(self):
+        with self._lock:
+            yield
+
     def clear(self) -> None:
         with self._lock:
             self._tasks.clear()
@@ -79,9 +89,17 @@ class TaskManager:
     def store(self) -> TaskStore:
         return self._store
 
+    @staticmethod
+    def _event(task: Task, kind: str, step_id: str | None = None) -> None:
+        events = task.metrics.setdefault("lifecycle_events", [])
+        events.append({"sequence": len(events) + 1, "task_id": task.id,
+                       "step_id": step_id, "kind": kind, "occurred_at": _utc_now_iso()})
+        task._touch()
+
     def create_task(self, user_input: str) -> Task:
         task = Task(user_input=user_input)
-        with self._lock:
+        self._event(task, "task.created")
+        with self._lock, self._store.transaction():
             self._store.create(task)
         return task
 
@@ -92,68 +110,83 @@ class TaskManager:
         return self._store.list()
 
     def start_task(self, task_id: str) -> Task:
-        with self._lock:
+        with self._lock, self._store.transaction():
             task = self._store.get(task_id)
             task.start()
+            self._event(task, "task.started")
             self._store.update(task)
         return task
 
     def succeed_task(self, task_id: str, result: Optional[dict[str, Any]] = None) -> Task:
-        with self._lock:
+        with self._lock, self._store.transaction():
             task = self._store.get(task_id)
             task.succeed(result)
+            self._event(task, "task.succeeded")
             self._store.update(task)
         return task
 
     def fail_task(self, task_id: str, error: str) -> Task:
-        with self._lock:
+        with self._lock, self._store.transaction():
             task = self._store.get(task_id)
             task.fail(error)
+            self._event(task, "task.failed")
             self._store.update(task)
         return task
 
     def add_step(self, task_id: str, name: str, tool: Optional[str] = None) -> TaskStep:
-        with self._lock:
+        with self._lock, self._store.transaction():
             task = self._store.get(task_id)
             step = task.add_step(name, tool)
+            self._event(task, "step.created", step.id)
             self._store.update(task)
         return step
 
     def start_step(self, task_id: str, step_id: str) -> TaskStep:
-        with self._lock:
+        with self._lock, self._store.transaction():
             task = self._store.get(task_id)
             step = task.get_step(step_id)
             step.start()
+            self._event(task, "step.started", step.id)
             self._store.update(task)
         return step
 
     def succeed_step(
         self, task_id: str, step_id: str, output: Optional[str] = None
     ) -> TaskStep:
-        with self._lock:
+        with self._lock, self._store.transaction():
             task = self._store.get(task_id)
             step = task.get_step(step_id)
             step.succeed(output)
+            self._event(task, "step.succeeded", step.id)
             self._store.update(task)
         return step
 
     def fail_step(self, task_id: str, step_id: str, error: str) -> TaskStep:
-        with self._lock:
+        with self._lock, self._store.transaction():
             task = self._store.get(task_id)
             step = task.get_step(step_id)
             step.fail(error)
+            self._event(task, "step.failed", step.id)
             self._store.update(task)
         return step
 
     def set_step_attempts(self, task_id: str, step_id: str, attempts: int) -> None:
-        with self._lock:
+        with self._lock, self._store.transaction():
             task = self._store.get(task_id)
             step = task.get_step(step_id)
             step.attempts = attempts
             self._store.update(task)
 
     def add_metric_events(self, task_id: str, key: str, events: list[dict[str, Any]]) -> None:
-        with self._lock:
+        with self._lock, self._store.transaction():
             task = self._store.get(task_id)
             task.metrics.setdefault(key, []).extend(events)
+            self._store.update(task)
+
+    def save_plan(self, task_id: str, plan: dict[str, Any]) -> None:
+        with self._lock, self._store.transaction():
+            task = self._store.get(task_id)
+            task.metrics["plan"] = plan
+            self._event(task, "plan.saved")
+            task._touch()
             self._store.update(task)

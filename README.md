@@ -212,3 +212,7 @@ python -m demo.security_smoke
 ```
 
 工作区路径检查同时用于 Hook 和工具；生产装配可通过 `.env` 中的 JSON 数组 `ALLOWED_TOOLS` / `ALLOWED_PERMISSIONS` 控制模型可用工具。新增工具默认不自动重试，只有可安全重放时才声明 `retry_safe = True`。
+
+## 任务历史持久化（学习版）
+
+默认写入 `data/tasks.sqlite3`，可用 `TASK_DB_PATH` 修改；`MAX_CONCURRENT_TASKS` 默认 4。无需额外安装数据库。已实现范围和重启恢复边界见 [设计与学习说明](docs/design/11_task_persistence.md)。

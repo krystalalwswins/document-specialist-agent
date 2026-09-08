@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import asdict
 
 from agent.executor import Executor
 from agent.planner import Planner
@@ -33,9 +34,11 @@ class AgentOrchestrator:
 
     def run_task(self, task_id: str) -> Task:
         task = self._task_manager.get_task(task_id)
+        # Claim before entering failure handling: a duplicate caller must not fail the owner.
+        self._task_manager.start_task(task_id)
         try:
-            self._task_manager.start_task(task_id)
             plan = self._planner.plan(task.user_input)
+            self._task_manager.save_plan(task_id, asdict(plan))
             answer = self._executor.run(task_id, task.user_input, plan)
             self._task_manager.succeed_task(task_id, {"answer": answer})
         except Exception as exc:
@@ -44,4 +47,4 @@ class AgentOrchestrator:
                 self._task_manager.fail_task(task_id, str(exc))
             logger.exception("task %s failed", task_id)
             raise
-        return task
+        return self._task_manager.get_task(task_id)

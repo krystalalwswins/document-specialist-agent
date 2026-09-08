@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from agent.orchestrator import AgentOrchestrator
 from agent.wiring import build_orchestrator
+from core.config import get_settings
 from task.task_model import TaskNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -30,18 +31,36 @@ def _run_task(orchestrator: AgentOrchestrator, task_id: str) -> None:
         logger.exception("background task %s failed", task_id)
 
 
-def create_app(orchestrator: AgentOrchestrator | None = None) -> FastAPI:
+def create_app(orchestrator: AgentOrchestrator | None = None, *, max_concurrent_tasks: int | None = None) -> FastAPI:
     orchestrator = orchestrator or build_orchestrator()
+    limit = max_concurrent_tasks if max_concurrent_tasks is not None else get_settings().max_concurrent_tasks
+    if limit < 1:
+        raise ValueError("max_concurrent_tasks must be positive")
+    slots = threading.BoundedSemaphore(limit)
+
+    def run_with_slot(task_id):
+        try:
+            _run_task(orchestrator, task_id)
+        finally:
+            slots.release()
+
     app = FastAPI(title="Document Specialist Agent")
 
     @app.post("/tasks", status_code=201)
     def create_task(request: CreateTaskRequest):
-        task = orchestrator.task_manager.create_task(request.user_input)
-        threading.Thread(
-            target=_run_task,
-            args=(orchestrator, task.id),
-            daemon=True,
-        ).start()
+        # Reserve before creating a task: a rejected request leaves no orphan record.
+        if not slots.acquire(blocking=False):
+            raise HTTPException(status_code=503, detail="task capacity reached")
+        task = None
+        try:
+            task = orchestrator.task_manager.create_task(request.user_input)
+            threading.Thread(target=run_with_slot, args=(task.id,), daemon=True).start()
+        except Exception:
+            slots.release()
+            if task is not None:
+                orchestrator.task_manager.start_task(task.id)
+                orchestrator.task_manager.fail_task(task.id, "background worker could not start")
+            raise
         return task.to_dict()
 
     @app.get("/tasks/{task_id}")

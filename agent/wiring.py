@@ -10,6 +10,7 @@ from core.config import Settings, get_settings
 from sandbox.client import SandboxClient
 from storage.storage_manager import StorageManager
 from task.task_manager import TaskManager
+from task.sqlite_store import SQLiteTaskStore
 from tools.file_tool import FileTool
 from tools.report_tool import ReportTool
 from tools.sandbox_tool import SandboxTool
@@ -33,7 +34,7 @@ def build_orchestrator(settings: Settings | None = None) -> AgentOrchestrator:
     registry.register(FileTool(sandbox))
     registry.register(ReportTool(sandbox, storage, report_prefix=settings.report_prefix))
 
-    task_manager = TaskManager()
+    task_manager = TaskManager(SQLiteTaskStore(settings.task_db_path))
     llm = LLMClient(settings)
     planner = Planner(llm)
     executor = Executor(llm, registry, task_manager)
