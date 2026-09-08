@@ -94,3 +94,10 @@ class StorageManager:
             )
         except ClientError as exc:
             raise StorageError(f"presign failed '{object_name}': {exc}") from exc
+
+    def delete_file(self, object_name: str) -> None:
+        """Delete a known task artifact (used for smoke-test cleanup)."""
+        try:
+            self._s3_client.delete_object(Bucket=self.bucket, Key=object_name)
+        except ClientError as exc:
+            raise StorageError(f"delete failed '{object_name}': {exc}") from exc

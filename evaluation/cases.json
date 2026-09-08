@@ -1,0 +1,5 @@
+[
+  {"name": "csv_positive", "values": [10, 20, 30], "format": "csv", "expected_total": 60},
+  {"name": "csv_negative_zero", "values": [-10, 0, 3], "format": "csv", "expected_total": -7},
+  {"name": "xlsx_total", "values": [5, 15], "format": "xlsx", "expected_total": 20}
+]

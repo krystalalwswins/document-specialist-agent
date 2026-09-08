@@ -42,6 +42,7 @@ class ToolResult:
     error: Optional[str] = None
     error_type: Optional[ErrorType] = None
     terminal: bool = False  # Unsafe/unknown execution state: stop the task, not just this step.
+    artifact: Optional[dict[str, Any]] = None
 
     def to_text(self) -> str:
         """Human-readable text to feed back to the LLM."""

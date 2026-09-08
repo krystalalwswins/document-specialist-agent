@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from sandbox.client import SandboxClient
+if TYPE_CHECKING:
+    from sandbox.client import SandboxClient
 from tools.base_tool import BaseTool, ToolResult
 
 

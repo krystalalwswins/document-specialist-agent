@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     )
 
     # SQLite is built into Python; no extra database service is required.
+    task_timeout_seconds: float = Field(default=300, gt=0)
+    max_tool_calls: int = Field(default=24, ge=1)
+    max_iterations: int = Field(default=8, ge=1)
+    context_max_chars: int = Field(default=24000, ge=4000)
+    task_queue_capacity: int = Field(default=100, ge=1)
+    llm_timeout_seconds: float = Field(default=60, gt=0)
+    mcp_parser_url: str = ""
+    mcp_parser_tool: str = "parse_document"
     max_concurrent_tasks: int = Field(default=4, ge=1, le=32)
     task_db_path: str = "data/tasks.sqlite3"
 
@@ -31,7 +39,7 @@ class Settings(BaseSettings):
     sandbox_default_timeout: int = Field(default=30, ge=1)
     sandbox_max_timeout: int = Field(default=120, ge=1)
     sandbox_http_grace: int = Field(default=10, ge=1, le=60)
-    allowed_tools: list[str] = Field(default_factory=lambda: ["run_python", "read_file", "save_report"])
+    allowed_tools: list[str] = Field(default_factory=lambda: ["run_python", "read_file", "save_report", "read_step_output", "parse_document"])
     allowed_permissions: list[str] = Field(default_factory=lambda: ["sandbox.execute", "file.read", "artifact.write"])
     report_prefix: str = "reports"
 

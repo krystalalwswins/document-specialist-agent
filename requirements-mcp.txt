@@ -1,0 +1,3 @@
+-r requirements.txt
+# Adapter intentionally targets the documented v1 API, not SDK v2.
+mcp>=1.10,<2

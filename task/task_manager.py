@@ -11,7 +11,7 @@ from contextlib import contextmanager, nullcontext
 from threading import RLock
 from typing import Any, Optional
 
-from .task_model import Task, TaskError, TaskNotFoundError, TaskStep, _utc_now_iso
+from .task_model import Task, TaskError, TaskNotFoundError, TaskStep, TaskStatus, StepStatus, _utc_now_iso
 
 
 class TaskStore(ABC):
@@ -96,10 +96,16 @@ class TaskManager:
                        "step_id": step_id, "kind": kind, "occurred_at": _utc_now_iso()})
         task._touch()
 
-    def create_task(self, user_input: str) -> Task:
-        task = Task(user_input=user_input)
+    def create_task(self, user_input: str, *, inputs=None, artifact_requirements=None, capacity=None, memory_note="") -> Task:
+        task = Task(user_input=user_input, inputs=inputs or [], artifact_requirements=artifact_requirements or {})
+        if memory_note:
+            from memory.notes import redact
+            task.metrics["memory_note"] = redact(memory_note)
         self._event(task, "task.created")
         with self._lock, self._store.transaction():
+            if capacity is not None and sum(t.status in (TaskStatus.CREATED, TaskStatus.RUNNING)
+                                            for t in self._store.list()) >= capacity:
+                raise TaskError("task queue capacity reached")
             self._store.create(task)
         return task
 
@@ -128,6 +134,11 @@ class TaskManager:
     def fail_task(self, task_id: str, error: str) -> Task:
         with self._lock, self._store.transaction():
             task = self._store.get(task_id)
+            for step in task.steps:
+                if step.status in (StepStatus.PENDING, StepStatus.RUNNING):
+                    step.fail(error)
+                    self._event(task, "step.failed", step.id)
+            task.metrics["termination_reason"] = error
             task.fail(error)
             self._event(task, "task.failed")
             self._store.update(task)
@@ -180,7 +191,14 @@ class TaskManager:
     def add_metric_events(self, task_id: str, key: str, events: list[dict[str, Any]]) -> None:
         with self._lock, self._store.transaction():
             task = self._store.get(task_id)
-            task.metrics.setdefault(key, []).extend(events)
+            destination = task.metrics.setdefault(key, [])
+            for event in events:
+                event = dict(event)
+                event.setdefault('task_id', task_id)
+                event.setdefault('occurred_at', _utc_now_iso())
+                event.setdefault('sequence', len(destination) + 1)
+                destination.append(event)
+            task._touch()
             self._store.update(task)
 
     def save_plan(self, task_id: str, plan: dict[str, Any]) -> None:
@@ -190,3 +208,26 @@ class TaskManager:
             self._event(task, "plan.saved")
             task._touch()
             self._store.update(task)
+
+    def set_metric(self, task_id: str, key: str, value: Any) -> None:
+        with self._lock, self._store.transaction():
+            task = self._store.get(task_id)
+            task.metrics[key] = value
+            task._touch()
+            self._store.update(task)
+
+    def claim_next(self) -> Task | None:
+        """Single atomic claim across workers sharing the database."""
+        with self._lock, self._store.transaction():
+            for task in self._store.list():
+                if task.status == TaskStatus.CREATED:
+                    return self.start_task(task.id)
+        return None
+
+    def recover_interrupted(self) -> int:
+        """Operator action ONLY while all workers are stopped. Never replay code."""
+        with self._lock, self._store.transaction():
+            tasks = [t for t in self._store.list() if t.status == TaskStatus.RUNNING]
+            for task in tasks:
+                self.fail_task(task.id, "worker_interrupted_execution_uncertain")
+            return len(tasks)

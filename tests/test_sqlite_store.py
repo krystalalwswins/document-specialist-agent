@@ -25,7 +25,7 @@ def test_reopen_preserves_task_step_plan_and_events(tmp_path):
     assert restored.status == TaskStatus.SUCCESS
     assert restored.steps[0].output == '文档内容'
     assert restored.metrics['plan'] == {'steps': ['read']}
-    assert restored.metrics['retry_events'] == [{'attempt': 1}]
+    assert restored.metrics['retry_events'][0]['attempt'] == 1
     assert [e['kind'] for e in restored.metrics['lifecycle_events']] == [
         'task.created', 'task.started', 'plan.saved', 'step.created',
         'step.started', 'step.succeeded', 'task.succeeded']

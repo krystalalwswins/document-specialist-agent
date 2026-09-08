@@ -1,89 +1,98 @@
-"""Light API tests using TestClient with a fake orchestrator."""
-
+"""API tests include lifespan-managed durable workers."""
+import base64
+import threading
 import time
 
 from fastapi.testclient import TestClient
-
 from api.app import create_app
 from task.task_manager import TaskManager
 
 
 class FakeOrchestrator:
+    memory = None
+
     def __init__(self):
         self.task_manager = TaskManager()
         self.run_task_calls = []
 
-    def run_task(self, task_id):
+    def run_task(self, task_id, *, claimed=False):
         self.run_task_calls.append(task_id)
-        self.task_manager.start_task(task_id)
-        self.task_manager.succeed_task(task_id, {"answer": "ok"})
+        if not claimed:
+            self.task_manager.start_task(task_id)
+        self.task_manager.succeed_task(task_id, {'answer': 'ok'})
+
+
+def wait_success(client, task_id):
+    for _ in range(200):
+        payload = client.get('/tasks/' + task_id).json()
+        if payload['status'] == 'SUCCESS':
+            return payload
+        time.sleep(0.01)
+    raise AssertionError('worker did not finish')
 
 
 def test_create_task_and_poll_until_success():
     orchestrator = FakeOrchestrator()
-    client = TestClient(create_app(orchestrator))
-
-    resp = client.post("/tasks", json={"user_input": "analyze excel"})
-    assert resp.status_code == 201
-    task_id = resp.json()["id"]
-    assert task_id
-
-    status = None
-    for _ in range(100):
-        payload = client.get(f"/tasks/{task_id}").json()
-        status = payload["status"]
-        if status == "SUCCESS":
-            break
-        time.sleep(0.01)
-
-    assert status == "SUCCESS"
-    assert payload["result"] == {"answer": "ok"}
-    assert orchestrator.run_task_calls == [task_id]
+    with TestClient(create_app(orchestrator)) as client:
+        response = client.post('/tasks', json={'user_input': 'analyze excel'})
+        assert response.status_code == 201
+        task_id = response.json()['id']
+        assert wait_success(client, task_id)['result'] == {'answer': 'ok'}
+        assert orchestrator.run_task_calls == [task_id]
 
 
 def test_get_missing_task_returns_404():
-    client = TestClient(create_app(FakeOrchestrator()))
-    resp = client.get("/tasks/nope")
-    assert resp.status_code == 404
+    with TestClient(create_app(FakeOrchestrator())) as client:
+        assert client.get('/tasks/nope').status_code == 404
 
 
 def test_list_tasks():
-    client = TestClient(create_app(FakeOrchestrator()))
-    client.post("/tasks", json={"user_input": "a"})
-    client.post("/tasks", json={"user_input": "b"})
-    payload = client.get("/tasks").json()
-    assert len(payload) == 2
+    with TestClient(create_app(FakeOrchestrator())) as client:
+        client.post('/tasks', json={'user_input': 'a'})
+        client.post('/tasks', json={'user_input': 'b'})
+        assert len(client.get('/tasks').json()) == 2
 
 
 def test_empty_user_input_rejected():
-    client = TestClient(create_app(FakeOrchestrator()))
-    resp = client.post("/tasks", json={"user_input": ""})
-    assert resp.status_code == 422
+    with TestClient(create_app(FakeOrchestrator())) as client:
+        for text in ['', '   ']:
+            assert client.post('/tasks', json={'user_input': text}).status_code == 422
 
 
 def test_capacity_rejects_without_creating_orphan_and_releases_slot():
-    import threading
-    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+    started, release = threading.Event(), threading.Event()
     class BlockingOrchestrator(FakeOrchestrator):
-        def run_task(self, task_id):
-            self.task_manager.start_task(task_id)
+        def run_task(self, task_id, *, claimed=False):
             started.set()
             assert release.wait(5)
-            self.task_manager.succeed_task(task_id)
-            finished.set()
+            super().run_task(task_id, claimed=claimed)
     orchestrator = BlockingOrchestrator()
-    client = TestClient(create_app(orchestrator, max_concurrent_tasks=1))
-    try:
-        assert client.post('/tasks', json={'user_input': 'first'}).status_code == 201
-        assert started.wait(2)
-        assert client.post('/tasks', json={'user_input': 'second'}).status_code == 503
-        assert len(orchestrator.task_manager.list_tasks()) == 1
-    finally:
-        release.set()
-    assert finished.wait(2)
-    for _ in range(100):
-        response = client.post('/tasks', json={'user_input': 'third'})
-        if response.status_code == 201:
-            break
-        time.sleep(0.01)
-    assert response.status_code == 201
+    with TestClient(create_app(orchestrator, max_concurrent_tasks=1, queue_capacity=1)) as client:
+        try:
+            first = client.post('/tasks', json={'user_input': 'first'})
+            assert first.status_code == 201
+            assert started.wait(2)
+            assert client.post('/tasks', json={'user_input': 'second'}).status_code == 503
+            assert len(orchestrator.task_manager.list_tasks()) == 1
+        finally:
+            release.set()
+        wait_success(client, first.json()['id'])
+        assert client.post('/tasks', json={'user_input': 'third'}).status_code == 201
+
+
+def test_input_validation_and_polling_redacts_bytes():
+    with TestClient(create_app(FakeOrchestrator())) as client:
+        encoded = base64.b64encode(b'a\n1\n').decode()
+        payload = {'user_input': 'parse', 'inputs': [{'filename': '../x.csv', 'content_base64': encoded}]}
+        assert client.post('/tasks', json=payload).status_code == 422
+        payload['inputs'][0]['filename'] = 'x.csv'
+        response = client.post('/tasks', json=payload)
+        assert response.status_code == 201
+        assert response.json()['inputs'] == [{'filename': 'x.csv'}]
+
+
+def test_evaluation_endpoint():
+    with TestClient(create_app(FakeOrchestrator())) as client:
+        task = client.post('/tasks', json={'user_input': 'x'}).json()
+        wait_success(client, task['id'])
+        assert client.get('/evaluation').json()['success_rate'] == 1.0

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from sandbox.client import SandboxClient
-from storage.storage_manager import StorageManager
+if TYPE_CHECKING:
+    from sandbox.client import SandboxClient
+if TYPE_CHECKING:
+    from storage.storage_manager import StorageManager
 from tools.base_tool import BaseTool, ToolResult
 from security.permission_manager import object_key
+from agent.runtime import current_run
+from documents.files import artifact_metadata
 
 
 class ReportTool(BaseTool):
@@ -40,7 +44,12 @@ class ReportTool(BaseTool):
         }
 
     def execute(self, sandbox_filename: str, oss_key: str) -> ToolResult:
-        object_key(self._report_prefix, oss_key)
+        context = current_run.get()
+        prefix = context.report_prefix if context and context.report_prefix else self._report_prefix
+        object_key(prefix, oss_key)
         data = self._client.read_bytes_file(sandbox_filename)
+        metadata = artifact_metadata(sandbox_filename, oss_key, data, context.requirements if context else {})
         url = self._storage.upload_file_content(oss_key, data)
-        return ToolResult(success=True, output=url)
+        metadata['url'] = url
+        metadata['expires_in_seconds'] = 3600
+        return ToolResult(success=True, output=url, artifact=metadata)

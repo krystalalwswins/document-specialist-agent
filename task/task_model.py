@@ -85,7 +85,7 @@ class TaskStep:
     attempts: int = 1
 
     _ALLOWED_TRANSITIONS = {
-        StepStatus.PENDING: {StepStatus.RUNNING},
+        StepStatus.PENDING: {StepStatus.RUNNING, StepStatus.FAILED},
         StepStatus.RUNNING: {StepStatus.SUCCESS, StepStatus.FAILED},
     }
 
@@ -153,13 +153,15 @@ class Task:
     steps: list[TaskStep] = field(default_factory=list)
     result: Optional[dict[str, Any]] = None
     error: Optional[str] = None
+    inputs: list[dict[str, Any]] = field(default_factory=list)
+    artifact_requirements: dict[str, Any] = field(default_factory=dict)
     # Forward-looking hook for Phase 2 evaluation (llm_calls, total_tokens, ...).
     metrics: dict[str, Any] = field(default_factory=dict)
     created_time: str = field(default_factory=_utc_now_iso)
     updated_time: str = field(default_factory=_utc_now_iso)
 
     _ALLOWED_TRANSITIONS = {
-        TaskStatus.CREATED: {TaskStatus.RUNNING},
+        TaskStatus.CREATED: {TaskStatus.RUNNING, TaskStatus.FAILED},
         TaskStatus.RUNNING: {TaskStatus.SUCCESS, TaskStatus.FAILED},
     }
 
@@ -207,6 +209,8 @@ class Task:
             "result": self.result,
             "error": self.error,
             "metrics": self.metrics,
+            "inputs": self.inputs,
+            "artifact_requirements": self.artifact_requirements,
             "created_time": self.created_time,
             "updated_time": self.updated_time,
         }
@@ -221,6 +225,8 @@ class Task:
             result=data.get("result"),
             error=data.get("error"),
             metrics=data.get("metrics", {}),
+            inputs=data.get("inputs", []),
+            artifact_requirements=data.get("artifact_requirements", {}),
             created_time=data["created_time"],
             updated_time=data["updated_time"],
         )

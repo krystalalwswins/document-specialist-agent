@@ -20,6 +20,8 @@ from agent_sandbox import Sandbox
 
 from core.config import Settings, get_settings
 from security.permission_manager import PermissionDenied, workspace_path
+from agent.runtime import current_run
+from documents.files import MAX_BYTES
 
 
 class SandboxError(Exception):
@@ -97,7 +99,8 @@ class SandboxClient:
 
     @property
     def workspace(self) -> str:
-        return self._settings.sandbox_workspace
+        context = current_run.get()
+        return context.workspace if context and context.workspace else self._settings.sandbox_workspace
 
     def resolve(self, filename: str) -> str:
         """Return an absolute path inside the sandbox workspace."""
@@ -152,7 +155,14 @@ class SandboxClient:
     def read_bytes_file(self, filename: str) -> bytes:
         path = self.resolve(filename)
         self._guard_path(path)
-        return b"".join(self._client.file.download_file(path=path, request_options=self._request_options()))
+        chunks = []
+        size = 0
+        for chunk in self._client.file.download_file(path=path, request_options=self._request_options()):
+            size += len(chunk)
+            if size > MAX_BYTES:
+                raise ValueError("document exceeds 2 MiB limit")
+            chunks.append(chunk)
+        return b"".join(chunks)
 
     def delete_file(self, filename: str) -> None:
         path = self.resolve(filename)
@@ -161,6 +171,15 @@ class SandboxClient:
         result = self._shell(f"rm -f -- {shlex.quote(path)}")
         if result.exit_code != 0:
             raise SandboxError("sandbox cleanup failed")
+
+    def prepare_task(self, task_id: str) -> str:
+        # Called before entering task scope; guard parent paths before mkdir.
+        path = workspace_path(self._settings.sandbox_workspace, "tasks/" + task_id)
+        self._guard_path(path)
+        result = self._shell("mkdir -p -- " + shlex.quote(path))
+        if result.exit_code != 0:
+            raise SandboxError("could not create task directory")
+        return path
 
     def execute_python(
         self,

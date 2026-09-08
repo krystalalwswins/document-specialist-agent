@@ -5,14 +5,17 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from agent.llm_client import LLMClient
+if TYPE_CHECKING:
+    from agent.llm_client import LLMClient
+    from tools.tool_registry import ToolRegistry
 from agent.planner import Plan
 from retry.retry_policy import RetryDecision, RetryPolicy, classify_exception
 from task.task_manager import TaskManager
 from tools.base_tool import ErrorType, ToolResult
-from tools.tool_registry import ToolRegistry
+from agent.runtime import current_run, check_budget
+from memory.context import compact_messages, result_reference
 
 
 class MaxIterationsError(Exception):
@@ -31,7 +34,9 @@ class Executor:
         task_manager: TaskManager,
         max_iterations: int = 8,
         retry_policy: RetryPolicy | None = None,
+        context_max_chars: int = 24000,
     ) -> None:
+        self._context_max_chars = context_max_chars
         self._llm = llm
         self._registry = registry
         self._task_manager = task_manager
@@ -50,15 +55,33 @@ class Executor:
             {"role": "user", "content": f"Task: {user_input}\n\nPlan:\n{plan.summary()}"},
         ]
 
+        corrections = 0
         for _ in range(self._max_iterations):
+            check_budget()
+            messages = compact_messages(messages, self._context_max_chars)
+            self._task_manager.add_metric_events(task_id, 'llm_request_events', [{'messages': messages}])
             response = self._llm.chat(messages, tools=self._registry.to_openai_tools())
+            check_budget()
             message = response.choices[0].message
-            messages.append(self._assistant_message(message))
+            assistant = self._assistant_message(message)
+            self._task_manager.add_metric_events(task_id, 'message_events', [assistant])
+            messages.append(assistant)
 
             if not message.tool_calls:
+                context = current_run.get()
+                missing = (context and context.requirements.get('required') and
+                           not self._task_manager.get_task(task_id).metrics.get('artifacts'))
+                if missing and corrections < 2:
+                    corrections += 1
+                    messages.append({'role': 'user', 'content':
+                                     'No validated artifact has been saved. Correct the file and call save_report before finishing.'})
+                    continue
+                if missing:
+                    raise ValueError('required_artifact_missing')
                 return message.content or ""
 
             for call in message.tool_calls:
+                check_budget()
                 step = self._task_manager.add_step(task_id, call.function.name, tool=call.function.name)
                 self._task_manager.start_step(task_id, step.id)
                 try:
@@ -66,12 +89,22 @@ class Executor:
                 except (ValueError, TypeError):
                     arguments = None  # Registry produces INVALID_ARGUMENT without invoking a tool.
 
+                self._task_manager.add_metric_events(task_id, 'tool_call_events', [{
+                    'step_id': step.id, 'tool_call_id': call.id,
+                    'tool_name': call.function.name, 'status': 'STARTED',
+                }])
                 result, _, attempts = self._invoke_tool(
                     task_id, call.function.name, arguments, step_id=step.id, tool_call_id=call.id,
                 )
                 self._task_manager.set_step_attempts(task_id, step.id, attempts)
+                self._task_manager.add_metric_events(task_id, 'tool_call_events', [{
+                    'step_id': step.id, 'tool_call_id': call.id,
+                    'tool_name': call.function.name, 'status': 'SUCCESS' if result.success else 'FAILED',
+                }])
 
                 if result.success:
+                    if result.artifact:
+                        self._task_manager.add_metric_events(task_id, 'artifacts', [result.artifact])
                     self._task_manager.succeed_step(task_id, step.id, output=result.output)
                 else:
                     self._task_manager.fail_step(
@@ -79,11 +112,11 @@ class Executor:
                     )
                 if result.terminal:
                     raise UnsafeExecutionStateError(result.error or "unsafe sandbox execution state")
-                content = result.to_text()
+                content = result_reference(result.to_text(), task_id, step.id)
 
-                messages.append(
-                    {"role": "tool", "tool_call_id": call.id, "content": content}
-                )
+                tool_message = {"role": "tool", "tool_call_id": call.id, "content": content}
+                self._task_manager.add_metric_events(task_id, 'message_events', [tool_message])
+                messages.append(tool_message)
 
         raise MaxIterationsError(f"exceeded {self._max_iterations} tool-calling iterations")
 
@@ -110,6 +143,9 @@ class Executor:
                 }])
 
         while True:
+            context = current_run.get()
+            if context:
+                context.consume_tool()
             attempt += 1
             started = time.monotonic()
             try:
@@ -127,6 +163,7 @@ class Executor:
                 record(
                     self._make_event(task_id, name, attempt, None, None, "success", duration_ms, "SUCCESS")
                 )
+                check_budget()
                 return result, events, attempt
 
             decision = (
@@ -147,8 +184,12 @@ class Executor:
             )
 
             if decision.should_retry:
+                if context and time.monotonic() + decision.delay_seconds >= context.deadline:
+                    from agent.runtime import BudgetExceeded
+                    raise BudgetExceeded('task_deadline_exceeded_before_retry')
                 time.sleep(decision.delay_seconds)
                 continue
+            check_budget()
             return result, events, attempt
 
     def _record_retry_events(self, task_id: str, events: list[dict[str, Any]]) -> None:
