@@ -2,8 +2,10 @@
 
 import errno
 import json
+import pathlib
 import subprocess
 import sys
+import tempfile
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +20,24 @@ from retry.retry_policy import RetryPolicy, classify_exception
 from sandbox.client import PATH_GUARD, SandboxExecutionUncertain
 from security.permission_manager import PermissionDenied, PermissionManager, object_key, workspace_path
 from storage.storage_manager import StorageError
+
+
+def _can_create_symlinks() -> bool:
+    """Windows only allows symlinks in Developer Mode or from an elevated shell."""
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "target"
+            target.write_text("x")
+            (pathlib.Path(tmp) / "link").symlink_to(target)
+        return True
+    except (OSError, NotImplementedError):
+        return False
+
+
+requires_symlinks = pytest.mark.skipif(
+    not _can_create_symlinks(),
+    reason="OS/user cannot create symlinks (on Windows: enable Developer Mode)",
+)
 from task.task_manager import TaskManager
 from tools.base_tool import BaseTool, ErrorType, ToolError, ToolResult
 from tools.file_tool import FileTool
@@ -63,6 +83,7 @@ def test_production_wiring_uses_configured_allowlist():
     assert [schema["function"]["name"] for schema in schemas] == ["read_file"]
 
 
+@requires_symlinks
 def test_remote_path_guard_checks_real_symlinks(tmp_path):
     root = tmp_path / "work"
     root.mkdir()

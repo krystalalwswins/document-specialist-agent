@@ -181,7 +181,17 @@ python -m demo.run_demo
 
 # 7. 启动 API（另开终端；任务执行时才真正用到 LLM_API_KEY）
 .venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8000
+
+# 8. 调用（若 .env 设置了 API_TOKEN，则每个请求都要带 X-API-Token 头）
+curl -X POST http://127.0.0.1:8000/tasks -H "Content-Type: application/json" ^
+  -H "X-API-Token: <你的 API_TOKEN>" ^
+  -d "{\"user_input\":\"读取 input.csv，统计各部门平均薪资并保存为 reports/summary.csv\"}"
+
+curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
 ```
+
+> `API_TOKEN` 留空时不做鉴权：任何能访问该端口的进程都能提交任务，而任务会在沙箱内执行
+> 模型生成的代码。仅限本机自用；一旦监听 `0.0.0.0` 或对外暴露，必须设置 `API_TOKEN`。
 
 ---
 

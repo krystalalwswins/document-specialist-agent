@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     minio_secret_key: str = "minioadminpassword"
     minio_bucket_name: str = "doc-agent-storage"
 
+    # HTTP API access token. Empty means auth is disabled (local development only):
+    # anyone who can reach the port can submit tasks that execute code in the sandbox.
+    api_token: str = ""
+
     # LLM (OpenAI-compatible, e.g. DeepSeek)
     llm_api_key: str = ""
     llm_base_url: str = "https://api.deepseek.com"
