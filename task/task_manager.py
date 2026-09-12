@@ -93,8 +93,8 @@ class TaskManager:
     def store(self) -> TaskStore:
         return self._store
 
-    def create_task(self, user_input: str) -> Task:
-        task = Task(user_input=user_input)
+    def create_task(self, user_input: str, input_files: Optional[list[dict[str, Any]]] = None) -> Task:
+        task = Task(user_input=user_input, input_files=list(input_files or []))
         with self._lock:
             self._store.create(task)
         return task
@@ -170,6 +170,18 @@ class TaskManager:
         with self._lock:
             task = self._store.get(task_id)
             task.metrics.setdefault(key, []).extend(events)
+            self._store.update(task)
+
+    def set_input_files(self, task_id: str, input_files: list[dict[str, Any]]) -> None:
+        with self._lock:
+            task = self._store.get(task_id)
+            task.set_input_files(input_files)
+            self._store.update(task)
+
+    def add_artifact(self, task_id: str, artifact: dict[str, Any]) -> None:
+        with self._lock:
+            task = self._store.get(task_id)
+            task.add_artifact(artifact)
             self._store.update(task)
 
     def metric_sink(self, task_id: str, key: str, **context: Any) -> Callable[[dict[str, Any]], None]:

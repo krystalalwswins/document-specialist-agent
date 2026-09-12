@@ -84,6 +84,21 @@ class StorageManager:
         except ClientError as exc:
             raise StorageError(f"download failed '{object_name}': {exc}") from exc
 
+    def stat_object(self, object_name: str) -> Optional[dict[str, Any]]:
+        """Return ``{"size": int, "etag": str}`` or None when the object is absent.
+
+        Used by artifact validation: a task must not report success while the
+        deliverable it claims to have produced is missing or empty.
+        """
+        try:
+            response = self._s3_client.head_object(Bucket=self.bucket, Key=object_name)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in ("404", "NoSuchKey", "NotFound"):
+                return None
+            raise StorageError(f"stat failed '{object_name}': {exc}") from exc
+        return {"size": int(response.get("ContentLength", 0)), "etag": response.get("ETag", "")}
+
     def generate_presigned_url(self, object_name: str, expires_in: int = 3600) -> str:
         """Generate a temporary, secure download URL."""
         try:

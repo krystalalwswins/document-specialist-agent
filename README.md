@@ -185,7 +185,7 @@ python -m demo.run_demo
 # 8. 调用（若 .env 设置了 API_TOKEN，则每个请求都要带 X-API-Token 头）
 curl -X POST http://127.0.0.1:8000/tasks -H "Content-Type: application/json" ^
   -H "X-API-Token: <你的 API_TOKEN>" ^
-  -d "{\"user_input\":\"读取 input.csv，统计各部门平均薪资并保存为 reports/summary.csv\"}"
+  -d "{\"user_input\":\"读取 sales.xlsx，按区域汇总收入，保存为 reports/q3_summary.xlsx\",\"input_files\":[{\"oss_key\":\"raw/sales.xlsx\"}]}"
 
 curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
 ```
@@ -203,6 +203,12 @@ curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
 - **LLM 调用边界**：单次调用超时 `LLM_TIMEOUT` 秒，只对瞬态故障（超时/连接/429/5xx）按指数退避 + 抖动
   重试 `LLM_MAX_ATTEMPTS` 次，每次尝试写入 `task.metrics["llm_events"]`。SDK 自带的隐藏重试已关闭，
   避免「两层重试叠加」导致任务长时间卡在 RUNNING。
+- **任务输入装载**：`POST /tasks` 的 `input_files` 接受 OSS 对象键（默认限定在 `INPUT_PREFIX`，默认 `raw/`），
+  在规划前把文件写进沙箱，并把绝对路径告诉模型；键不存在/对象为空会直接让任务 FAILED，错误信息里带原因。
+  所有路径都过 `workspace_path` 校验，越界与穿越会被拒绝。
+- **产物校验**：`save_report` 会带上产物元数据（对象键、字节数、类型），任务成功前逐个回查对象存储
+  （存在、非空、字节数一致），结果写入 `task.metrics["validation_events"]`；校验不过的任务判 FAILED，
+  不会出现「模型说做完了但其实没有产物」的假成功。校验通过的产物列表放在 `result.artifacts`。
 
 ---
 

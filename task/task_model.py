@@ -153,6 +153,10 @@ class Task:
     steps: list[TaskStep] = field(default_factory=list)
     result: Optional[dict[str, Any]] = None
     error: Optional[str] = None
+    # Task inputs to load from object storage, and artifacts produced by tools.
+    # Both are plain dicts so the domain model keeps zero infrastructure imports.
+    input_files: list[dict[str, Any]] = field(default_factory=list)
+    artifacts: list[dict[str, Any]] = field(default_factory=list)
     # Forward-looking hook for Phase 2 evaluation (llm_calls, total_tokens, ...).
     metrics: dict[str, Any] = field(default_factory=dict)
     created_time: str = field(default_factory=_utc_now_iso)
@@ -200,6 +204,14 @@ class Task:
                 return step
         raise StepNotFoundError(step_id)
 
+    def set_input_files(self, input_files: list[dict[str, Any]]) -> None:
+        self.input_files = list(input_files)
+        self._touch()
+
+    def add_artifact(self, artifact: dict[str, Any]) -> None:
+        self.artifacts.append(artifact)
+        self._touch()
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -208,6 +220,8 @@ class Task:
             "steps": [step.to_dict() for step in self.steps],
             "result": self.result,
             "error": self.error,
+            "input_files": self.input_files,
+            "artifacts": self.artifacts,
             "metrics": self.metrics,
             "created_time": self.created_time,
             "updated_time": self.updated_time,
@@ -222,6 +236,8 @@ class Task:
             steps=[TaskStep.from_dict(step) for step in data.get("steps", [])],
             result=data.get("result"),
             error=data.get("error"),
+            input_files=data.get("input_files", []),
+            artifacts=data.get("artifacts", []),
             metrics=data.get("metrics", {}),
             created_time=data["created_time"],
             updated_time=data["updated_time"],

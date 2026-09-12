@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     allowed_tools: list[str] = Field(default_factory=lambda: ["run_python", "read_file", "save_report"])
     allowed_permissions: list[str] = Field(default_factory=lambda: ["sandbox.execute", "file.read", "artifact.write"])
     report_prefix: str = "reports"
+    # Object-storage prefix that task inputs may be loaded from (OSS -> sandbox).
+    input_prefix: str = Field(default="raw", min_length=1)
 
     @model_validator(mode="after")
     def check_security_settings(self):
@@ -40,6 +42,7 @@ class Settings(BaseSettings):
             raise ValueError("llm retry base delay must not exceed max delay")
         workspace_path(self.sandbox_workspace, ".", allow_root=True)
         object_key(self.report_prefix, self.report_prefix.rstrip("/") + "/probe")
+        object_key(self.input_prefix, self.input_prefix.rstrip("/") + "/probe")
         return self
 
     # MinIO / S3-compatible object storage

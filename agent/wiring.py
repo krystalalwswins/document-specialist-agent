@@ -6,8 +6,10 @@ from agent.executor import Executor
 from agent.llm_client import LLMClient
 from agent.orchestrator import AgentOrchestrator
 from agent.planner import Planner
+from agent.validator import ArtifactValidator
 from core.config import Settings, get_settings
 from sandbox.client import SandboxClient
+from sandbox.inputs import InputStager
 from storage.storage_manager import StorageManager
 from task.file_task_store import FileTaskStore
 from task.task_manager import TaskManager
@@ -38,4 +40,10 @@ def build_orchestrator(settings: Settings | None = None) -> AgentOrchestrator:
     llm = LLMClient(settings)
     planner = Planner(llm)
     executor = Executor(llm, registry, task_manager)
-    return AgentOrchestrator(task_manager, planner, executor)
+    return AgentOrchestrator(
+        task_manager,
+        planner,
+        executor,
+        input_stager=InputStager(storage, sandbox, settings),
+        validator=ArtifactValidator(storage),
+    )

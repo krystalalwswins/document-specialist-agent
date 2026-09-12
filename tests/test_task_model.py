@@ -109,3 +109,34 @@ def test_task_missing_step_raises():
     task = Task(user_input="x")
     with pytest.raises(Exception, match="step not found"):
         task.get_step("nope")
+
+
+def test_input_files_and_artifacts_round_trip():
+    task = Task(user_input="x", input_files=[{"oss_key": "raw/a.csv"}])
+    task.add_artifact({"oss_key": "reports/b.csv", "bytes": 3})
+
+    restored = Task.from_dict(task.to_dict())
+
+    assert restored.input_files == [{"oss_key": "raw/a.csv"}]
+    assert restored.artifacts == [{"oss_key": "reports/b.csv", "bytes": 3}]
+
+
+def test_from_dict_tolerates_records_written_before_these_fields_existed():
+    data = Task(user_input="x").to_dict()
+    data.pop("input_files")
+    data.pop("artifacts")
+
+    restored = Task.from_dict(data)
+
+    assert restored.input_files == []
+    assert restored.artifacts == []
+
+
+def test_failing_before_start_is_allowed_but_succeeding_is_not():
+    abandoned = Task(user_input="x")
+    abandoned.fail("stale")
+    assert abandoned.status == TaskStatus.FAILED
+
+    never_started = Task(user_input="x")
+    with pytest.raises(TaskStateError):
+        never_started.succeed({"answer": "nope"})

@@ -47,7 +47,7 @@ class Executor:
                     "using the available tools, then produce a final answer."
                 ),
             },
-            {"role": "user", "content": f"Task: {user_input}\n\nPlan:\n{plan.summary()}"},
+            {"role": "user", "content": f"Task: {user_input}\n\nPlan:\n{plan.summary()}{self._input_context(task_id)}"},
         ]
 
         for iteration in range(1, self._max_iterations + 1):
@@ -79,6 +79,8 @@ class Executor:
 
                 if result.success:
                     self._task_manager.succeed_step(task_id, step.id, output=result.output)
+                    if result.metadata:
+                        self._task_manager.add_artifact(task_id, dict(result.metadata))
                 else:
                     self._task_manager.fail_step(
                         task_id, step.id, error=result.error or "unknown error"
@@ -92,6 +94,16 @@ class Executor:
                 )
 
         raise MaxIterationsError(f"exceeded {self._max_iterations} tool-calling iterations")
+
+    def _input_context(self, task_id: str) -> str:
+        """Tell the model which input files already exist inside the sandbox."""
+        staged = [item for item in self._task_manager.get_task(task_id).input_files if item.get("sandbox_path")]
+        if not staged:
+            return ""
+        lines = "\n".join(
+            f"- {item['sandbox_path']} ({item.get('bytes', 0)} bytes)" for item in staged
+        )
+        return f"\n\nInput files already staged in the sandbox (use these paths as-is):\n{lines}"
 
     def _invoke_tool(
         self, task_id: str, name: str, arguments: Any,

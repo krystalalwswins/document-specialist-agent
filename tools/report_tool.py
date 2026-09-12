@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import mimetypes
 from typing import Any
 
 from sandbox.client import SandboxClient
@@ -43,4 +44,13 @@ class ReportTool(BaseTool):
         object_key(self._report_prefix, oss_key)
         data = self._client.read_bytes_file(sandbox_filename)
         url = self._storage.upload_file_content(oss_key, data)
-        return ToolResult(success=True, output=url)
+        return ToolResult(
+            success=True,
+            output=url,
+            metadata={
+                "oss_key": oss_key,
+                "bytes": len(data),
+                "content_type": mimetypes.guess_type(oss_key)[0] or "application/octet-stream",
+                "sandbox_filename": sandbox_filename,
+            },
+        )

@@ -128,3 +128,28 @@ def test_startup_recovers_stale_tasks(tmp_path):
 
     assert body["status"] == "FAILED"
     assert "stale" in body["error"]
+
+
+def test_create_task_records_declared_input_files():
+    orchestrator = FakeOrchestrator()
+    client = _client(orchestrator)
+
+    resp = client.post(
+        "/tasks",
+        json={
+            "user_input": "summarise the workbook",
+            "input_files": [{"oss_key": "raw/sales.xlsx"}, {"oss_key": "raw/q3.csv", "filename": "q3.csv"}],
+        },
+    )
+
+    assert resp.status_code == 201
+    assert resp.json()["input_files"] == [
+        {"oss_key": "raw/sales.xlsx", "filename": None},
+        {"oss_key": "raw/q3.csv", "filename": "q3.csv"},
+    ]
+
+
+def test_input_files_default_to_empty_and_are_validated():
+    client = _client(FakeOrchestrator())
+    assert client.post("/tasks", json={"user_input": "x"}).json()["input_files"] == []
+    assert client.post("/tasks", json={"user_input": "x", "input_files": [{"oss_key": ""}]}).status_code == 422

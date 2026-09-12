@@ -27,8 +27,16 @@ from task.task_model import TaskNotFoundError
 logger = logging.getLogger(__name__)
 
 
+class TaskInputFile(BaseModel):
+    oss_key: str = Field(min_length=1)
+    filename: str | None = Field(default=None, min_length=1)
+
+
 class CreateTaskRequest(BaseModel):
     user_input: str = Field(min_length=1)
+    # Object-storage keys to load into the sandbox before the task runs.
+    # Example: [{"oss_key": "raw/sales.xlsx"}]
+    input_files: list[TaskInputFile] = Field(default_factory=list)
 
 
 def _token_guard(settings: Settings):
@@ -104,7 +112,10 @@ def create_app(
 
     @app.post("/tasks", status_code=201, dependencies=[guard])
     def create_task(request: CreateTaskRequest):
-        task = orchestrator.task_manager.create_task(request.user_input)
+        task = orchestrator.task_manager.create_task(
+            request.user_input,
+            input_files=[item.model_dump() for item in request.input_files],
+        )
         threading.Thread(
             target=_run_task,
             args=(orchestrator, task.id),

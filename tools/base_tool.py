@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
@@ -42,6 +42,9 @@ class ToolResult:
     error: Optional[str] = None
     error_type: Optional[ErrorType] = None
     terminal: bool = False  # Unsafe/unknown execution state: stop the task, not just this step.
+    # Machine-readable payload for the runtime (e.g. an artifact record). The LLM
+    # only ever sees ``to_text()``; this is for lifecycle/validation bookkeeping.
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_text(self) -> str:
         """Human-readable text to feed back to the LLM."""
