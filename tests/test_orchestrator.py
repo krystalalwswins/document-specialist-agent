@@ -38,14 +38,23 @@ class FakeStager:
         self.log = log
         self.calls = []
 
-    def stage_all(self, specs):
+    def prepare(self, task_id):
+        if self.log is not None:
+            self.log.append("prepare")
+        return f"/home/gem/workspace/tasks/{task_id}"
+
+    def stage_all(self, task_id, specs):
         self.calls.append(list(specs))
         if self.log is not None:
             self.log.append("stage")
         if self.error:
             raise self.error
         return [
-            {**spec, "sandbox_path": f"/home/gem/workspace/{spec['oss_key'].split('/')[-1]}", "bytes": 7}
+            {
+                **spec,
+                "sandbox_path": f"/home/gem/workspace/tasks/{task_id}/{spec['oss_key'].split('/')[-1]}",
+                "bytes": 7,
+            }
             for spec in specs
         ]
 
@@ -142,10 +151,11 @@ def test_inputs_are_staged_before_planning_and_recorded_on_the_task():
 
     orchestrator.run_task(task.id)
 
-    assert order == ["stage", "plan"]
+    assert order == ["prepare", "stage", "plan"]
     staged = task_manager.get_task(task.id).input_files
     assert staged[0]["oss_key"] == "raw/sales.xlsx"
-    assert staged[0]["sandbox_path"] == "/home/gem/workspace/sales.xlsx"
+    assert staged[0]["sandbox_path"] == f"/home/gem/workspace/tasks/{task.id}/sales.xlsx"
+    assert task_manager.get_task(task.id).workspace_dir == f"/home/gem/workspace/tasks/{task.id}"
 
 
 def test_input_staging_failure_marks_the_task_failed():

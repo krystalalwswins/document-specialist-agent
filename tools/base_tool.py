@@ -62,6 +62,9 @@ class BaseTool(ABC):
     required_permissions: frozenset[str] = frozenset()
     file_parameters: tuple[str, ...] = ()
     object_key_parameters: tuple[str, ...] = ()
+    # Tools that run user code inside the sandbox get the per-task directory as
+    # their working directory, injected by the registry (never by the model).
+    task_scoped_cwd: bool = False
 
     @abstractmethod
     def parameters_schema(self) -> dict[str, Any]:

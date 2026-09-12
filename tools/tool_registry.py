@@ -6,7 +6,13 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
-from security.permission_manager import PermissionDenied, PermissionManager
+from security.permission_manager import (
+    PermissionDenied,
+    PermissionManager,
+    task_object_key,
+    task_workspace,
+    workspace_path,
+)
 from tools.base_tool import BaseTool, ErrorType, ToolError, ToolResult
 
 
@@ -37,7 +43,20 @@ class ToolRegistry:
     def to_openai_tools(self) -> list[dict[str, Any]]:
         return [tool.to_openai_schema() for tool in self._tools.values() if self._permissions.allows_tool(tool)]
 
-    def execute(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+    def execute(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        task_id: str | None = None,
+    ) -> ToolResult:
+        """Validate, authorize and run one tool call.
+
+        With ``task_id`` the call is bound to that task's namespace: file paths
+        resolve inside ``<workspace>/tasks/<task_id>`` and object keys are
+        re-rooted under ``<report_prefix>/<task_id>``, so concurrent tasks cannot
+        read or overwrite each other's files. Both rewrites happen before the
+        permission check, which then re-validates the final values.
+        """
         if name not in self._tools:
             return ToolResult(False, error="unknown tool", error_type=ErrorType.INVALID_ARGUMENT)
         tool = self.get(name)
@@ -46,10 +65,38 @@ class ToolRegistry:
         if not isinstance(arguments, dict) or not self._validators[name].is_valid(arguments):
             return ToolResult(False, error="arguments do not match tool schema", error_type=ErrorType.INVALID_ARGUMENT)
         try:
+            if task_id is not None:
+                arguments = self._bind_to_task(tool, arguments, task_id)
             self._permissions.check(tool, arguments)
+            if task_id is not None and tool.task_scoped_cwd:
+                return tool.execute(**arguments, cwd=self.task_directory(task_id))
             return tool.execute(**arguments)
         except PermissionDenied as exc:
             return ToolResult(False, error=str(exc), error_type=ErrorType.PERMISSION_DENIED)
+
+    def task_directory(self, task_id: str) -> str:
+        """Return the sandbox directory that belongs to ``task_id``."""
+        return task_workspace(self._permissions.workspace, task_id)
+
+    def task_object_prefix(self, task_id: str) -> str:
+        """Return the object-storage prefix that belongs to ``task_id``."""
+        return f"{self._permissions.report_prefix}/{task_id}"
+
+    def _bind_to_task(
+        self, tool: BaseTool, arguments: dict[str, Any], task_id: str
+    ) -> dict[str, Any]:
+        bound = dict(arguments)
+        for parameter in tool.file_parameters:
+            if parameter in bound:
+                bound[parameter] = workspace_path(
+                    self.task_directory(task_id), bound[parameter]
+                )
+        for parameter in tool.object_key_parameters:
+            if parameter in bound:
+                bound[parameter] = task_object_key(
+                    self._permissions.report_prefix, task_id, bound[parameter]
+                )
+        return bound
 
     def retry_safe(self, name: str) -> bool:
         return name in self._tools and self._tools[name].retry_safe

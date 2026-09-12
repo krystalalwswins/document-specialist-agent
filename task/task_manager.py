@@ -178,6 +178,12 @@ class TaskManager:
             task.set_input_files(input_files)
             self._store.update(task)
 
+    def set_workspace_dir(self, task_id: str, workspace_dir: str) -> None:
+        with self._lock:
+            task = self._store.get(task_id)
+            task.set_workspace_dir(workspace_dir)
+            self._store.update(task)
+
     def add_artifact(self, task_id: str, artifact: dict[str, Any]) -> None:
         with self._lock:
             task = self._store.get(task_id)

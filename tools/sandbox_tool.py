@@ -11,6 +11,7 @@ from tools.base_tool import BaseTool, ErrorType, ToolResult
 class SandboxTool(BaseTool):
     name = "run_python"
     required_permissions = frozenset({"sandbox.execute"})
+    task_scoped_cwd = True
     description = "Execute Python code in the isolated sandbox and return stdout/result/error."
 
     def __init__(self, client: SandboxClient, max_timeout: int = 120) -> None:
@@ -28,8 +29,11 @@ class SandboxTool(BaseTool):
             "required": ["code"],
         }
 
-    def execute(self, code: str, timeout: Optional[int] = None) -> ToolResult:
-        result = self._client.execute_python(code, timeout=timeout)
+    def execute(
+        self, code: str, timeout: Optional[int] = None, cwd: Optional[str] = None
+    ) -> ToolResult:
+        """Run code in a fresh session. ``cwd`` is injected by the registry, not the model."""
+        result = self._client.execute_python(code, timeout=timeout, cwd=cwd)
         if result.status == "ok":
             return ToolResult(success=True, output=result.text)
         error_type = ErrorType.TIMEOUT if result.status == "timeout" else ErrorType.EXECUTION

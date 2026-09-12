@@ -68,11 +68,15 @@ class AgentOrchestrator:
         return self._task_manager.get_task(task_id)
 
     def _stage_inputs(self, task_id: str) -> None:
-        """Load declared inputs from object storage before planning."""
+        """Create the task's own sandbox directory, then load its declared inputs."""
         task = self._task_manager.get_task(task_id)
-        if not task.input_files or self._input_stager is None:
+        if self._input_stager is None:
             return
-        staged = self._input_stager.stage_all(task.input_files)
+        workspace_dir = self._input_stager.prepare(task_id)
+        self._task_manager.set_workspace_dir(task_id, workspace_dir)
+        if not task.input_files:
+            return
+        staged = self._input_stager.stage_all(task_id, task.input_files)
         self._task_manager.set_input_files(task_id, staged)
         logger.info("task %s: staged %d input file(s)", task_id, len(staged))
 

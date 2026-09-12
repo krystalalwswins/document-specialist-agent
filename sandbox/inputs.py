@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any, Optional
 
-from security.permission_manager import object_key, workspace_path
+from security.permission_manager import object_key, task_workspace, workspace_path
 from storage.storage_manager import StorageError
 from core.config import Settings, get_settings
 
@@ -29,11 +29,20 @@ class InputStager:
         self._storage = storage
         self._sandbox = sandbox
 
-    def stage(self, oss_key: str, filename: Optional[str] = None) -> dict[str, Any]:
-        """Copy one object into the sandbox workspace; return the staging record."""
+    def prepare(self, task_id: str) -> str:
+        """Create the task's own sandbox directory and return it."""
+        path = task_workspace(self._settings.sandbox_workspace, task_id)
+        return self._sandbox.ensure_directory(path)
+
+    def stage(self, task_id: str, oss_key: str, filename: Optional[str] = None) -> dict[str, Any]:
+        """Copy one object into the task's sandbox directory; return the staging record."""
         key = object_key(self._settings.input_prefix, oss_key)
+        task_dir = self.prepare(task_id)
         name = filename or PurePosixPath(key).name
-        path = workspace_path(self._settings.sandbox_workspace, name)
+        path = workspace_path(task_dir, name)
+        # The client resolves paths against the workspace root, so hand it the
+        # task-relative target (tasks/<task_id>/<name>) rather than the basename.
+        target = PurePosixPath(path).relative_to(PurePosixPath(self._settings.sandbox_workspace))
 
         try:
             data = self._storage.download_file_content(key)
@@ -43,7 +52,7 @@ class InputStager:
             raise InputStagingError(f"input '{key}' is empty")
 
         try:
-            self._sandbox.write_bytes_file(name, data)
+            self._sandbox.write_bytes_file(str(target), data)
         except Exception as exc:  # sandbox/SDK failure -> task-level staging failure
             raise InputStagingError(f"cannot stage '{key}' into the sandbox: {exc}") from exc
         return {
@@ -53,10 +62,10 @@ class InputStager:
             "bytes": len(data),
         }
 
-    def stage_all(self, specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def stage_all(self, task_id: str, specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Stage every declared input, preserving order and original fields."""
         staged: list[dict[str, Any]] = []
         for spec in specs:
-            record = self.stage(spec["oss_key"], spec.get("filename"))
+            record = self.stage(task_id, spec["oss_key"], spec.get("filename"))
             staged.append({**spec, **record})
         return staged

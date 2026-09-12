@@ -20,7 +20,8 @@ class FakeSandboxClient:
     def read_bytes_file(self, filename):
         return self.data
 
-    def execute_python(self, code, timeout=None):
+    def execute_python(self, code, timeout=None, cwd=None):
+        self.cwd = cwd
         return self.execute_result
 
 

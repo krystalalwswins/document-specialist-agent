@@ -209,6 +209,11 @@ curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
 - **产物校验**：`save_report` 会带上产物元数据（对象键、字节数、类型），任务成功前逐个回查对象存储
   （存在、非空、字节数一致），结果写入 `task.metrics["validation_events"]`；校验不过的任务判 FAILED，
   不会出现「模型说做完了但其实没有产物」的假成功。校验通过的产物列表放在 `result.artifacts`。
+- **任务级隔离**：每个任务拥有自己的沙箱目录 `<SANDBOX_WORKSPACE>/tasks/<task_id>`（见 `task.workspace_dir`）
+  和对象前缀 `<REPORT_PREFIX>/<task_id>/`。工具参数在调用前由 Registry 重写进任务命名空间
+  （文件路径落到任务目录、对象键改挂到任务前缀），跨任务路径直接被拒；`run_python` 的工作目录
+  也由运行时注入任务目录，模型无法用相对路径写到共享根目录。两个同名输入、同名产物的任务并发执行
+  不会互相覆盖。
 
 ---
 

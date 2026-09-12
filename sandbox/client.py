@@ -162,6 +162,15 @@ class SandboxClient:
         if result.exit_code != 0:
             raise SandboxError("sandbox cleanup failed")
 
+    def ensure_directory(self, filename: str) -> str:
+        """Create a workspace directory (idempotent) and return its absolute path."""
+        path = self.resolve(filename)
+        self._guard_path(path)
+        result = self._shell(f"mkdir -p -- {shlex.quote(path)}")
+        if result.exit_code != 0:
+            raise SandboxError("sandbox mkdir failed")
+        return path
+
     def execute_python(
         self,
         code: str,

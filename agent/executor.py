@@ -96,14 +96,22 @@ class Executor:
         raise MaxIterationsError(f"exceeded {self._max_iterations} tool-calling iterations")
 
     def _input_context(self, task_id: str) -> str:
-        """Tell the model which input files already exist inside the sandbox."""
-        staged = [item for item in self._task_manager.get_task(task_id).input_files if item.get("sandbox_path")]
-        if not staged:
+        """Tell the model which sandbox directory and input files belong to this task."""
+        task = self._task_manager.get_task(task_id)
+        if not task.workspace_dir:
             return ""
-        lines = "\n".join(
-            f"- {item['sandbox_path']} ({item.get('bytes', 0)} bytes)" for item in staged
-        )
-        return f"\n\nInput files already staged in the sandbox (use these paths as-is):\n{lines}"
+        parts = [
+            f"\n\nThis task owns the sandbox directory: {task.workspace_dir}",
+            "Relative paths in your code, and file arguments to tools, resolve inside it.",
+        ]
+        staged = [item for item in task.input_files if item.get("sandbox_path")]
+        if staged:
+            lines = "\n".join(
+                f"- {item['sandbox_path']} ({item.get('bytes', 0)} bytes)" for item in staged
+            )
+            parts.append(f"Input files already staged there:\n{lines}")
+        parts.append(f"Write every output inside {task.workspace_dir} as well.")
+        return "\n".join(parts)
 
     def _invoke_tool(
         self, task_id: str, name: str, arguments: Any,
@@ -131,7 +139,7 @@ class Executor:
             attempt += 1
             started = time.monotonic()
             try:
-                result = self._registry.execute(name, arguments)
+                result = self._registry.execute(name, arguments, task_id=task_id)
                 error_type = None if result.success else result.error_type
                 error_message = result.error if not result.success else None
             except Exception as exc:

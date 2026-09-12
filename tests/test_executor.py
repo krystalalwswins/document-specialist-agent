@@ -167,16 +167,26 @@ def test_staged_input_paths_are_given_to_the_model():
     registry.register(EchoTool())
     llm = FakeLLM([_message(content="ok")])
     task_manager, executor = _make_executor(llm, registry)
-    task = task_manager.create_task(
-        "summarise the workbook",
-        input_files=[{"oss_key": "raw/sales.xlsx", "sandbox_path": "/home/gem/workspace/sales.xlsx", "bytes": 2048}],
+    task = task_manager.create_task("summarise the workbook")
+    task_manager.set_workspace_dir(task.id, f"/home/gem/workspace/tasks/{task.id}")
+    task_manager.set_input_files(
+        task.id,
+        [
+            {
+                "oss_key": "raw/sales.xlsx",
+                "sandbox_path": f"/home/gem/workspace/tasks/{task.id}/sales.xlsx",
+                "bytes": 2048,
+            }
+        ],
     )
+    task = task_manager.get_task(task.id)
     task_manager.start_task(task.id)
 
     executor.run(task.id, "summarise the workbook", Plan(user_input="x"))
 
     prompt = llm.calls[0]["messages"][1]["content"]
-    assert "/home/gem/workspace/sales.xlsx" in prompt
+    assert f"This task owns the sandbox directory: /home/gem/workspace/tasks/{task.id}" in prompt
+    assert f"/home/gem/workspace/tasks/{task.id}/sales.xlsx" in prompt
     assert "2048 bytes" in prompt
 
 
@@ -190,4 +200,34 @@ def test_no_input_section_when_nothing_was_staged():
 
     executor.run(task.id, "plain task", Plan(user_input="x"))
 
-    assert "staged in the sandbox" not in llm.calls[0]["messages"][1]["content"]
+    assert "owns the sandbox directory" not in llm.calls[0]["messages"][1]["content"]
+
+
+def test_executor_binds_tool_calls_to_the_task_directory():
+    """Tool arguments are rewritten into the task's own sandbox namespace."""
+    registry = ToolRegistry()
+    registry.register(EchoTool())
+    llm = FakeLLM(
+        [
+            _message(tool_calls=[_tool_call("echo", '{"text": "hi"}')]),
+            _message(content="done"),
+        ]
+    )
+    task_manager, executor = _make_executor(llm, registry)
+    task = task_manager.create_task("x")
+    task_manager.set_workspace_dir(task.id, f"/home/gem/workspace/tasks/{task.id}")
+    task_manager.start_task(task.id)
+
+    calls = {}
+
+    def spy(name, arguments, task_id=None):
+        calls["name"], calls["task_id"] = name, task_id
+        return ToolResult(success=True, output="ok")
+
+    executor._registry = SimpleNamespace(
+        to_openai_tools=registry.to_openai_tools, execute=spy
+    )
+
+    executor.run(task.id, "x", Plan(user_input="x"))
+
+    assert calls == {"name": "echo", "task_id": task.id}

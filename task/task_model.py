@@ -157,6 +157,8 @@ class Task:
     # Both are plain dicts so the domain model keeps zero infrastructure imports.
     input_files: list[dict[str, Any]] = field(default_factory=list)
     artifacts: list[dict[str, Any]] = field(default_factory=list)
+    # Sandbox directory owned by this task (set before execution starts).
+    workspace_dir: Optional[str] = None
     # Forward-looking hook for Phase 2 evaluation (llm_calls, total_tokens, ...).
     metrics: dict[str, Any] = field(default_factory=dict)
     created_time: str = field(default_factory=_utc_now_iso)
@@ -208,6 +210,10 @@ class Task:
         self.input_files = list(input_files)
         self._touch()
 
+    def set_workspace_dir(self, workspace_dir: str) -> None:
+        self.workspace_dir = workspace_dir
+        self._touch()
+
     def add_artifact(self, artifact: dict[str, Any]) -> None:
         self.artifacts.append(artifact)
         self._touch()
@@ -222,6 +228,7 @@ class Task:
             "error": self.error,
             "input_files": self.input_files,
             "artifacts": self.artifacts,
+            "workspace_dir": self.workspace_dir,
             "metrics": self.metrics,
             "created_time": self.created_time,
             "updated_time": self.updated_time,
@@ -238,6 +245,7 @@ class Task:
             error=data.get("error"),
             input_files=data.get("input_files", []),
             artifacts=data.get("artifacts", []),
+            workspace_dir=data.get("workspace_dir"),
             metrics=data.get("metrics", {}),
             created_time=data["created_time"],
             updated_time=data["updated_time"],
