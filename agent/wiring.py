@@ -13,6 +13,7 @@ from sandbox.inputs import InputStager
 from storage.storage_manager import StorageManager
 from task.file_task_store import FileTaskStore
 from task.task_manager import TaskManager
+from tools.document_tool import ParseDocumentTool
 from tools.file_tool import FileTool
 from tools.report_tool import ReportTool
 from tools.sandbox_tool import SandboxTool
@@ -34,6 +35,7 @@ def build_orchestrator(settings: Settings | None = None) -> AgentOrchestrator:
     ))
     registry.register(SandboxTool(sandbox, max_timeout=settings.sandbox_max_timeout))
     registry.register(FileTool(sandbox))
+    registry.register(ParseDocumentTool(sandbox, max_chars=settings.document_max_chars))
     registry.register(ReportTool(sandbox, storage, report_prefix=settings.report_prefix))
 
     task_manager = TaskManager(FileTaskStore(settings.task_store_dir))
@@ -46,4 +48,5 @@ def build_orchestrator(settings: Settings | None = None) -> AgentOrchestrator:
         executor,
         input_stager=InputStager(storage, sandbox, settings),
         validator=ArtifactValidator(storage),
+        max_recovery_attempts=settings.task_max_recovery_attempts,
     )

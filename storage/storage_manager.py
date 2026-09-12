@@ -27,22 +27,37 @@ class StorageManager:
         self,
         settings: Optional[Settings] = None,
         s3_client: Optional[Any] = None,
+        presign_client: Optional[Any] = None,
     ) -> None:
         self._settings = settings or get_settings()
         self.bucket = self._settings.minio_bucket_name
-        self._s3_client = s3_client or self._build_client()
+        self._s3_client = s3_client or self._build_client(self._settings.minio_endpoint)
+        self._presign_client = presign_client
         self._bucket_ready = False
         self._lock = RLock()
 
-    def _build_client(self) -> Any:
+    def _build_client(self, endpoint: str) -> Any:
         return boto3.client(
             "s3",
-            endpoint_url=self._settings.minio_endpoint,
+            endpoint_url=endpoint,
             aws_access_key_id=self._settings.minio_access_key,
             aws_secret_access_key=self._settings.minio_secret_key,
             region_name="us-east-1",
             config=Config(connect_timeout=10, read_timeout=30, retries={"total_max_attempts": 1}),
         )
+
+    def _presigner(self) -> Any:
+        """Client used only to sign download URLs.
+
+        SigV4 signs the Host header, so a URL that must work from another machine
+        has to be signed *with* that machine's address. Rewriting the host after
+        signing would invalidate the signature.
+        """
+        if not self._settings.minio_public_endpoint:
+            return self._s3_client
+        if self._presign_client is None:
+            self._presign_client = self._build_client(self._settings.minio_public_endpoint)
+        return self._presign_client
 
     def ensure_bucket(self) -> None:
         """Idempotently create the bucket before the first write."""
@@ -100,9 +115,9 @@ class StorageManager:
         return {"size": int(response.get("ContentLength", 0)), "etag": response.get("ETag", "")}
 
     def generate_presigned_url(self, object_name: str, expires_in: int = 3600) -> str:
-        """Generate a temporary, secure download URL."""
+        """Generate a temporary download URL, signed for the public endpoint if set."""
         try:
-            return self._s3_client.generate_presigned_url(
+            return self._presigner().generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self.bucket, "Key": object_name},
                 ExpiresIn=expires_in,

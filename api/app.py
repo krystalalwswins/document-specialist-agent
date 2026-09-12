@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from agent.orchestrator import AgentOrchestrator
 from agent.wiring import build_orchestrator
+from api.workers import QueueFull, TaskWorkerPool
 from core.config import Settings, get_settings
 from task.task_manager import TaskManager
 from task.task_model import TaskNotFoundError
@@ -37,6 +38,9 @@ class CreateTaskRequest(BaseModel):
     # Object-storage keys to load into the sandbox before the task runs.
     # Example: [{"oss_key": "raw/sales.xlsx"}]
     input_files: list[TaskInputFile] = Field(default_factory=list)
+    # Set when the task must end with a downloadable deliverable: a run that
+    # produces no artifact at all is then treated as a failed deliverable.
+    require_artifact: bool = False
 
 
 def _token_guard(settings: Settings):
@@ -54,14 +58,6 @@ def _token_guard(settings: Settings):
             )
 
     return guard
-
-
-def _run_task(orchestrator: AgentOrchestrator, task_id: str) -> None:
-    try:
-        orchestrator.run_task(task_id)
-    except Exception:
-        # run_task already marks the task FAILED before re-raising.
-        logger.exception("background task %s failed", task_id)
 
 
 def _recover_stale(task_manager: TaskManager, settings: Settings, where: str) -> None:
@@ -91,22 +87,43 @@ def _start_reaper(task_manager: TaskManager, settings: Settings) -> threading.Ev
     return stop
 
 
+def _task_handler(orchestrator: AgentOrchestrator):
+    """Wrap run_task so a failure is logged and never escapes into the worker pool."""
+
+    def run(task_id: str) -> None:
+        try:
+            orchestrator.run_task(task_id)
+        except Exception:
+            # run_task already marks the task FAILED before re-raising.
+            logger.exception("background task %s failed", task_id)
+
+    return run
+
+
 def create_app(
     orchestrator: AgentOrchestrator | None = None,
     settings: Settings | None = None,
+    pool: TaskWorkerPool | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     orchestrator = orchestrator or build_orchestrator(settings)
     guard = Depends(_token_guard(settings))
+    pool = pool or TaskWorkerPool(
+        _task_handler(orchestrator),
+        max_workers=settings.task_max_workers,
+        max_pending=settings.task_max_pending,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         _recover_stale(orchestrator.task_manager, settings, "on startup")
         stop = _start_reaper(orchestrator.task_manager, settings)
+        pool.start()
         try:
             yield
         finally:
             stop.set()
+            pool.stop()
 
     app = FastAPI(title="Document Specialist Agent", lifespan=lifespan)
 
@@ -115,12 +132,17 @@ def create_app(
         task = orchestrator.task_manager.create_task(
             request.user_input,
             input_files=[item.model_dump() for item in request.input_files],
+            require_artifact=request.require_artifact,
         )
-        threading.Thread(
-            target=_run_task,
-            args=(orchestrator, task.id),
-            daemon=True,
-        ).start()
+        try:
+            pool.submit(task.id)
+        except QueueFull as exc:
+            reason = f"rejected: {exc}"
+            orchestrator.task_manager.fail_task(task.id, reason)
+            orchestrator.task_manager.add_metric_events(
+                task.id, "recovery_events", [{"kind": "rejected", "reason": reason}]
+            )
+            raise HTTPException(status_code=429, detail=reason, headers={"Retry-After": "5"})
         return task.to_dict()
 
     @app.get("/tasks/{task_id}", dependencies=[guard])
@@ -133,6 +155,10 @@ def create_app(
     @app.get("/tasks", dependencies=[guard])
     def list_tasks():
         return [task.to_dict() for task in orchestrator.task_manager.list_tasks()]
+
+    @app.get("/health", dependencies=[guard])
+    def health():
+        return {"status": "ok", "workers": pool.stats()}
 
     return app
 

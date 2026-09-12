@@ -93,8 +93,17 @@ class TaskManager:
     def store(self) -> TaskStore:
         return self._store
 
-    def create_task(self, user_input: str, input_files: Optional[list[dict[str, Any]]] = None) -> Task:
-        task = Task(user_input=user_input, input_files=list(input_files or []))
+    def create_task(
+        self,
+        user_input: str,
+        input_files: Optional[list[dict[str, Any]]] = None,
+        require_artifact: bool = False,
+    ) -> Task:
+        task = Task(
+            user_input=user_input,
+            input_files=list(input_files or []),
+            require_artifact=require_artifact,
+        )
         with self._lock:
             self._store.create(task)
         return task

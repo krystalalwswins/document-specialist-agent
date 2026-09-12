@@ -138,7 +138,7 @@ class ArtifactTool(BaseTool):
         return ToolResult(
             success=True,
             output="http://localhost:9000/doc-agent-storage/reports/out.csv",
-            metadata={"oss_key": "reports/out.csv", "bytes": 12},
+            metadata={"kind": "artifact", "oss_key": "reports/out.csv", "bytes": 12},
         )
 
 
@@ -160,6 +160,35 @@ def test_tool_metadata_is_recorded_as_a_task_artifact():
     assert task_manager.get_task(task.id).artifacts == [
         {"oss_key": "reports/out.csv", "bytes": 12}
     ]
+
+
+class NonArtifactMetadataTool(BaseTool):
+    name = "read_file"
+    description = "returns bookkeeping metadata that is not a deliverable"
+
+    def parameters_schema(self):
+        return {"type": "object", "properties": {}}
+
+    def execute(self, **kwargs):
+        return ToolResult(success=True, output="text", metadata={"chars": 4, "source": "a.pdf"})
+
+
+def test_non_artifact_metadata_is_not_recorded_as_a_deliverable():
+    registry = ToolRegistry()
+    registry.register(NonArtifactMetadataTool())
+    llm = FakeLLM(
+        [
+            _message(tool_calls=[_tool_call("read_file", "{}")]),
+            _message(content="done"),
+        ]
+    )
+    task_manager, executor = _make_executor(llm, registry)
+    task = task_manager.create_task("x")
+    task_manager.start_task(task.id)
+
+    executor.run(task.id, "x", Plan(user_input="x"))
+
+    assert task_manager.get_task(task.id).artifacts == []
 
 
 def test_staged_input_paths_are_given_to_the_model():

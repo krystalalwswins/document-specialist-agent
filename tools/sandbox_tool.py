@@ -8,6 +8,24 @@ from sandbox.client import SandboxClient
 from tools.base_tool import BaseTool, ErrorType, ToolResult
 
 
+def execution_to_tool_result(result: Any) -> ToolResult:
+    """Map a normalized sandbox execution into a ToolResult.
+
+    Shared by every tool that runs code (run_python, parse_document): a timeout
+    or an uncertain sandbox state must stop the task, not be replayed.
+    """
+    if result.status == "ok":
+        return ToolResult(success=True, output=result.text)
+    error_type = ErrorType.TIMEOUT if result.status == "timeout" else ErrorType.EXECUTION
+    return ToolResult(
+        success=False,
+        output=result.text,
+        error=result.error or result.status,
+        error_type=error_type,
+        terminal=getattr(result, "execution_uncertain", False) or result.status == "timeout",
+    )
+
+
 class SandboxTool(BaseTool):
     name = "run_python"
     required_permissions = frozenset({"sandbox.execute"})
@@ -34,13 +52,4 @@ class SandboxTool(BaseTool):
     ) -> ToolResult:
         """Run code in a fresh session. ``cwd`` is injected by the registry, not the model."""
         result = self._client.execute_python(code, timeout=timeout, cwd=cwd)
-        if result.status == "ok":
-            return ToolResult(success=True, output=result.text)
-        error_type = ErrorType.TIMEOUT if result.status == "timeout" else ErrorType.EXECUTION
-        return ToolResult(
-            success=False,
-            output=result.text,
-            error=result.error or result.status,
-            error_type=error_type,
-            terminal=result.execution_uncertain or result.status == "timeout",
-        )
+        return execution_to_tool_result(result)

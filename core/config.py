@@ -27,7 +27,9 @@ class Settings(BaseSettings):
     sandbox_default_timeout: int = Field(default=30, ge=1)
     sandbox_max_timeout: int = Field(default=120, ge=1)
     sandbox_http_grace: int = Field(default=10, ge=1, le=60)
-    allowed_tools: list[str] = Field(default_factory=lambda: ["run_python", "read_file", "save_report"])
+    allowed_tools: list[str] = Field(
+        default_factory=lambda: ["run_python", "read_file", "parse_document", "save_report"]
+    )
     allowed_permissions: list[str] = Field(default_factory=lambda: ["sandbox.execute", "file.read", "artifact.write"])
     report_prefix: str = "reports"
     # Object-storage prefix that task inputs may be loaded from (OSS -> sandbox).
@@ -47,6 +49,10 @@ class Settings(BaseSettings):
 
     # MinIO / S3-compatible object storage
     minio_endpoint: str = "http://localhost:9000"
+    # Optional: the address a download link must use for *other* machines.
+    # Presigned URLs are signed for the host they are generated with, so this
+    # builds a second client for signing instead of rewriting the URL afterwards.
+    minio_public_endpoint: str = ""
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadminpassword"
     minio_bucket_name: str = "doc-agent-storage"
@@ -72,6 +78,15 @@ class Settings(BaseSettings):
     # Keep it well above the slowest single step (LLM attempts + tool timeouts).
     task_stale_after_seconds: int = Field(default=1800, ge=1)
     task_reaper_interval_seconds: int = Field(default=60, ge=1)
+    # Bounded worker pool: a single sandbox container should not run unbounded
+    # tasks at once, and POST /tasks returns 429 once the queue is full.
+    task_max_workers: int = Field(default=2, ge=1)
+    task_max_pending: int = Field(default=32, ge=0)
+    # How many extra attempts a task gets after artifact validation fails.
+    task_max_recovery_attempts: int = Field(default=1, ge=0)
+
+    # Document parsing budget (characters returned to the model per call).
+    document_max_chars: int = Field(default=20000, ge=100)
 
 
 @lru_cache(maxsize=1)

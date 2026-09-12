@@ -83,6 +83,15 @@ def test_production_wiring_uses_configured_allowlist():
     assert [schema["function"]["name"] for schema in schemas] == ["read_file"]
 
 
+def test_default_allowlist_exposes_every_registered_tool():
+    from agent.wiring import build_orchestrator
+    orchestrator = build_orchestrator(Settings(_env_file=None))
+    schemas = orchestrator._executor._registry.to_openai_tools()
+    names = [schema["function"]["name"] for schema in schemas]
+    assert names == ["run_python", "read_file", "parse_document", "save_report"]
+    assert names == orchestrator._executor._registry.names()
+
+
 @requires_symlinks
 def test_remote_path_guard_checks_real_symlinks(tmp_path):
     root = tmp_path / "work"

@@ -159,6 +159,8 @@ class Task:
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     # Sandbox directory owned by this task (set before execution starts).
     workspace_dir: Optional[str] = None
+    # When true, a run that produces no artifact at all is a failed deliverable.
+    require_artifact: bool = False
     # Forward-looking hook for Phase 2 evaluation (llm_calls, total_tokens, ...).
     metrics: dict[str, Any] = field(default_factory=dict)
     created_time: str = field(default_factory=_utc_now_iso)
@@ -229,6 +231,7 @@ class Task:
             "input_files": self.input_files,
             "artifacts": self.artifacts,
             "workspace_dir": self.workspace_dir,
+            "require_artifact": self.require_artifact,
             "metrics": self.metrics,
             "created_time": self.created_time,
             "updated_time": self.updated_time,
@@ -246,6 +249,7 @@ class Task:
             input_files=data.get("input_files", []),
             artifacts=data.get("artifacts", []),
             workspace_dir=data.get("workspace_dir"),
+            require_artifact=bool(data.get("require_artifact", False)),
             metrics=data.get("metrics", {}),
             created_time=data["created_time"],
             updated_time=data["updated_time"],

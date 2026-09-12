@@ -7,7 +7,7 @@ from typing import Any
 
 from agent.executor import Executor
 from agent.planner import Planner
-from agent.validator import ArtifactValidator
+from agent.validator import ArtifactCheck, ArtifactValidator, ValidationResult
 from task.task_manager import TaskManager
 from task.task_model import Task, TaskStatus
 
@@ -26,12 +26,14 @@ class AgentOrchestrator:
         executor: Executor,
         input_stager: object | None = None,
         validator: ArtifactValidator | None = None,
+        max_recovery_attempts: int = 0,
     ) -> None:
         self._task_manager = task_manager
         self._planner = planner
         self._executor = executor
         self._input_stager = input_stager
         self._validator = validator
+        self._max_recovery_attempts = max_recovery_attempts
 
     @property
     def task_manager(self) -> TaskManager:
@@ -50,9 +52,7 @@ class AgentOrchestrator:
                 task.user_input,
                 on_event=self._task_manager.metric_sink(task_id, "llm_events", phase="plan"),
             )
-            answer = self._executor.run(task_id, task.user_input, plan)
-            artifacts = self._task_manager.get_task(task_id).artifacts
-            self._validate_artifacts(task_id, artifacts)
+            answer, artifacts = self._execute_with_recovery(task_id, task.user_input, plan)
             result: dict[str, Any] = {"answer": answer}
             if artifacts:
                 result["artifacts"] = artifacts
@@ -80,14 +80,63 @@ class AgentOrchestrator:
         self._task_manager.set_input_files(task_id, staged)
         logger.info("task %s: staged %d input file(s)", task_id, len(staged))
 
-    def _validate_artifacts(self, task_id: str, artifacts: list[dict]) -> None:
-        if self._validator is None or not artifacts:
-            return
-        result = self._validator.validate(artifacts)
+    def _execute_with_recovery(
+        self, task_id: str, user_input: str, plan: Any
+    ) -> tuple[str, list[dict]]:
+        """Execute, and repair a rejected deliverable a bounded number of times.
+
+        Only the artifacts produced by the attempt under test are validated, so a
+        stale record from a failed attempt cannot poison the retry.
+        """
+        repairs = 0
+        repair_hint: str | None = None
+        while True:
+            already = len(self._task_manager.get_task(task_id).artifacts)
+            answer = self._executor.run(task_id, user_input, plan, repair_hint=repair_hint)
+            current = self._task_manager.get_task(task_id)
+            artifacts = current.artifacts[already:]
+            result = self._check_artifacts(task_id, artifacts, current.require_artifact)
+            if result is None or result.ok:
+                return answer, artifacts
+            if repairs >= self._max_recovery_attempts:
+                raise ArtifactValidationError(
+                    f"artifact validation failed: {result.failure_summary()}"
+                )
+            repairs += 1
+            repair_hint = (
+                f"artifact validation failed ({result.failure_summary()}). "
+                "The file was reported as saved but could not be confirmed."
+            )
+            self._record_recovery(task_id, repairs, repair_hint)
+
+    def _check_artifacts(
+        self, task_id: str, artifacts: list[dict], require_artifact: bool = False
+    ) -> Any:
+        if self._validator is None:
+            return None
+        if not artifacts:
+            if not require_artifact:
+                return None
+            result = ValidationResult(
+                ok=False,
+                checks=[
+                    ArtifactCheck("", False, "task requires an artifact but none was produced")
+                ],
+            )
+        else:
+            result = self._validator.validate(artifacts)
         sink = self._task_manager.metric_sink(task_id, "validation_events")
         for event in result.events():
             sink(event)
-        if not result.ok:
-            raise ArtifactValidationError(
-                f"artifact validation failed: {result.failure_summary()}"
-            )
+        return result
+
+    def _record_recovery(self, task_id: str, attempt: int, reason: str) -> None:
+        sink = self._task_manager.metric_sink(task_id, "recovery_events")
+        sink(
+            {
+                "kind": "artifact_repair",
+                "attempt": attempt,
+                "reason": reason,
+            }
+        )
+        logger.warning("task %s: repairing artifacts (attempt %d)", task_id, attempt)

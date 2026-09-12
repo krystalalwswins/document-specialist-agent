@@ -38,7 +38,19 @@ class Executor:
         self._max_iterations = max_iterations
         self._retry_policy = retry_policy or RetryPolicy()
 
-    def run(self, task_id: str, user_input: str, plan: Plan) -> str:
+    def run(
+        self,
+        task_id: str,
+        user_input: str,
+        plan: Plan,
+        repair_hint: str | None = None,
+    ) -> str:
+        """Run the tool-calling loop until the model stops calling tools.
+
+        ``repair_hint`` is only set by the orchestrator's recovery path: it tells
+        the model why the previous attempt was rejected so it can fix the
+        deliverable instead of repeating the same output.
+        """
         messages: list[dict[str, Any]] = [
             {
                 "role": "system",
@@ -49,6 +61,16 @@ class Executor:
             },
             {"role": "user", "content": f"Task: {user_input}\n\nPlan:\n{plan.summary()}{self._input_context(task_id)}"},
         ]
+        if repair_hint:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"Your previous attempt was rejected: {repair_hint}\n"
+                        "Fix the deliverable (re-create the file and save it again) before answering."
+                    ),
+                }
+            )
 
         for iteration in range(1, self._max_iterations + 1):
             response = self._llm.chat(
@@ -79,8 +101,15 @@ class Executor:
 
                 if result.success:
                     self._task_manager.succeed_step(task_id, step.id, output=result.output)
-                    if result.metadata:
-                        self._task_manager.add_artifact(task_id, dict(result.metadata))
+                    # Only deliverables are artifacts; other tools also attach
+                    # metadata (parse_document reports chars/markdown_path).
+                    if result.metadata.get("kind") == "artifact":
+                        artifact = {
+                            key: value
+                            for key, value in result.metadata.items()
+                            if key != "kind"
+                        }
+                        self._task_manager.add_artifact(task_id, artifact)
                 else:
                     self._task_manager.fail_step(
                         task_id, step.id, error=result.error or "unknown error"

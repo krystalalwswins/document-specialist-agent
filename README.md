@@ -185,7 +185,7 @@ python -m demo.run_demo
 # 8. 调用（若 .env 设置了 API_TOKEN，则每个请求都要带 X-API-Token 头）
 curl -X POST http://127.0.0.1:8000/tasks -H "Content-Type: application/json" ^
   -H "X-API-Token: <你的 API_TOKEN>" ^
-  -d "{\"user_input\":\"读取 sales.xlsx，按区域汇总收入，保存为 reports/q3_summary.xlsx\",\"input_files\":[{\"oss_key\":\"raw/sales.xlsx\"}]}"
+  -d "{\"user_input\":\"读取 sales.xlsx，按区域汇总收入，保存为 reports/q3_summary.xlsx\",\"input_files\":[{\"oss_key\":\"raw/sales.xlsx\"}],\"require_artifact\":true}"
 
 curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
 ```
@@ -214,6 +214,18 @@ curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
   （文件路径落到任务目录、对象键改挂到任务前缀），跨任务路径直接被拒；`run_python` 的工作目录
   也由运行时注入任务目录，模型无法用相对路径写到共享根目录。两个同名输入、同名产物的任务并发执行
   不会互相覆盖。
+- **文档解析工具**：`parse_document` 用沙箱内的 PyMuPDF / openpyxl / python-pptx / docx2txt 把
+  PDF、Excel、PPTX、DOCX、CSV 等转成 markdown（转换脚本由运行时提供，不让模型现场写解析代码）；
+  完整结果写入任务目录下的 `<文件名>.md`，返回给模型的只是 `DOCUMENT_MAX_CHARS` 以内的预览。
+  `read_file` 遇到二进制文档会直接提示改用 `parse_document`，不再浪费一轮去撞解码错误。
+- **有限恢复**：产物校验失败时，任务不会被立刻判死，而是在 `TASK_MAX_RECOVERY_ATTEMPTS` 次内带着
+  失败原因重跑一轮（提示模型重新生成并保存产物），修复过程写入 `recovery_events`；只有仍不通过才判 FAILED。
+  请求里设 `require_artifact: true` 时，"一个产物都没产出"也算校验失败。
+- **并发上限与队列**：`POST /tasks` 不再无限起线程，而是进入 `TASK_MAX_WORKERS` 个 worker 的池子，
+  在飞任务超过 `TASK_MAX_WORKERS + TASK_MAX_PENDING` 时直接返回 **429**（并把该任务标记 FAILED，
+  避免留下永远不会执行的任务）；`GET /health` 返回 worker 统计。
+- **下载链接对外可达**：设置 `MINIO_PUBLIC_ENDPOINT` 后，预签名 URL 会用该地址签名（SigV4 覆盖 Host，
+  所以必须用它签名而不是事后替换主机名）；要让同网段其他机器访问，把 `MINIO_BIND_HOST` 设为 `0.0.0.0`。
 
 ---
 

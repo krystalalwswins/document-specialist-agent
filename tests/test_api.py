@@ -1,6 +1,7 @@
 """Light API tests using TestClient with a fake orchestrator."""
 
 import time
+import threading
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
@@ -22,10 +23,10 @@ class FakeOrchestrator:
         self.task_manager.succeed_task(task_id, {"answer": "ok"})
 
 
-def _client(orchestrator, **settings_overrides):
+def _client(orchestrator, pool=None, **settings_overrides):
     """Build a client with deterministic settings (never read the developer's .env)."""
     settings = Settings(_env_file=None, **settings_overrides)
-    return TestClient(create_app(orchestrator, settings))
+    return TestClient(create_app(orchestrator, settings, pool))
 
 
 def test_create_task_and_poll_until_success():
@@ -153,3 +154,44 @@ def test_input_files_default_to_empty_and_are_validated():
     client = _client(FakeOrchestrator())
     assert client.post("/tasks", json={"user_input": "x"}).json()["input_files"] == []
     assert client.post("/tasks", json={"user_input": "x", "input_files": [{"oss_key": ""}]}).status_code == 422
+
+
+def test_require_artifact_flag_is_persisted_on_the_task():
+    orchestrator = FakeOrchestrator()
+    client = _client(orchestrator)
+
+    resp = client.post("/tasks", json={"user_input": "save a report", "require_artifact": True})
+
+    assert resp.status_code == 201
+    assert resp.json()["require_artifact"] is True
+    assert client.post("/tasks", json={"user_input": "x"}).json()["require_artifact"] is False
+
+
+def test_queue_full_returns_429_and_fails_the_task():
+    from api.workers import TaskWorkerPool
+
+    release = threading.Event()
+    pool = TaskWorkerPool(lambda _task_id: release.wait(timeout=5), max_workers=1, max_pending=0)
+    orchestrator = FakeOrchestrator()
+    client = _client(orchestrator, pool=pool)
+
+    assert client.post("/tasks", json={"user_input": "first"}).status_code == 201
+    time.sleep(0.1)  # let the single worker pick the first task up
+
+    resp = client.post("/tasks", json={"user_input": "second"})
+    release.set()
+
+    assert resp.status_code == 429
+    assert "rejected" in resp.json()["detail"]
+    assert resp.headers["Retry-After"] == "5"
+    rejected = [t for t in orchestrator.task_manager.list_tasks() if t.error]
+    assert len(rejected) == 1
+    assert rejected[0].status.value == "FAILED"
+    assert rejected[0].metrics["recovery_events"][0]["kind"] == "rejected"
+
+
+def test_health_reports_worker_stats():
+    client = _client(FakeOrchestrator())
+    body = client.get("/health").json()
+    assert body["status"] == "ok"
+    assert "workers" in body

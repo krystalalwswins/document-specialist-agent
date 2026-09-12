@@ -48,6 +48,7 @@ class ReportTool(BaseTool):
             success=True,
             output=url,
             metadata={
+                "kind": "artifact",
                 "oss_key": oss_key,
                 "bytes": len(data),
                 "content_type": mimetypes.guess_type(oss_key)[0] or "application/octet-stream",
