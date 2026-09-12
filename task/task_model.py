@@ -159,7 +159,9 @@ class Task:
     updated_time: str = field(default_factory=_utc_now_iso)
 
     _ALLOWED_TRANSITIONS = {
-        TaskStatus.CREATED: {TaskStatus.RUNNING},
+        # CREATED -> FAILED covers a task that is abandoned/failed before it ever
+        # started (e.g. recovered as stale after a process restart).
+        TaskStatus.CREATED: {TaskStatus.RUNNING, TaskStatus.FAILED},
         TaskStatus.RUNNING: {TaskStatus.SUCCESS, TaskStatus.FAILED},
     }
 

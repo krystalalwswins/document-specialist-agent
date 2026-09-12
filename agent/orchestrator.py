@@ -35,7 +35,10 @@ class AgentOrchestrator:
         task = self._task_manager.get_task(task_id)
         try:
             self._task_manager.start_task(task_id)
-            plan = self._planner.plan(task.user_input)
+            plan = self._planner.plan(
+                task.user_input,
+                on_event=self._task_manager.metric_sink(task_id, "llm_events", phase="plan"),
+            )
             answer = self._executor.run(task_id, task.user_input, plan)
             self._task_manager.succeed_task(task_id, {"answer": answer})
         except Exception as exc:
@@ -44,4 +47,6 @@ class AgentOrchestrator:
                 self._task_manager.fail_task(task_id, str(exc))
             logger.exception("task %s failed", task_id)
             raise
-        return task
+        # Re-read: a persistent store returns copies, so the snapshot taken before
+        # the run would still show CREATED.
+        return self._task_manager.get_task(task_id)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from agent.llm_client import LLMClient
 
@@ -64,7 +64,11 @@ class Planner:
     def __init__(self, llm: LLMClient) -> None:
         self._llm = llm
 
-    def plan(self, user_input: str) -> Plan:
+    def plan(
+        self,
+        user_input: str,
+        on_event: Optional[Callable[[dict[str, Any]], None]] = None,
+    ) -> Plan:
         messages = [
             {
                 "role": "system",
@@ -79,6 +83,7 @@ class Planner:
             messages,
             tools=[CREATE_PLAN_TOOL],
             tool_choice={"type": "function", "function": {"name": "create_plan"}},
+            on_event=on_event,
         )
         message = response.choices[0].message
         if not message.tool_calls:

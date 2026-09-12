@@ -7,10 +7,24 @@ implementation with Redis / a database without touching callers.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 from threading import RLock
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
-from .task_model import Task, TaskError, TaskNotFoundError, TaskStep
+from .task_model import Task, TaskError, TaskNotFoundError, TaskStateError, TaskStatus, TaskStep
+
+
+def _seconds_since(timestamp: Optional[str], now: datetime) -> Optional[float]:
+    """Age of an ISO-8601 timestamp in seconds, or None when it is unreadable."""
+    if not timestamp:
+        return None
+    try:
+        parsed = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (now - parsed).total_seconds()
 
 
 class TaskStore(ABC):
@@ -157,3 +171,62 @@ class TaskManager:
             task = self._store.get(task_id)
             task.metrics.setdefault(key, []).extend(events)
             self._store.update(task)
+
+    def metric_sink(self, task_id: str, key: str, **context: Any) -> Callable[[dict[str, Any]], None]:
+        """Return an event callback that appends to ``task.metrics[key]``.
+
+        Used to hand the LLM client a task-scoped sink without coupling it to
+        TaskManager; ``context`` is merged into every event (phase, iteration).
+        """
+
+        def sink(event: dict[str, Any]) -> None:
+            self.add_metric_events(task_id, key, [{**event, **context}])
+
+        return sink
+
+    def recover_stale_tasks(
+        self,
+        stale_after_seconds: float,
+        *,
+        now: Optional[datetime] = None,
+    ) -> list[Task]:
+        """Fail non-terminal tasks that stopped making progress.
+
+        A process restart kills the worker thread but leaves the persisted task in
+        CREATED/RUNNING forever. This marks such records FAILED so the lifecycle
+        converges; it deliberately does **not** claim to stop any running code.
+        """
+        now = now or datetime.now(timezone.utc)
+        recovered: list[Task] = []
+        for task in self.list_tasks():
+            if task.status not in (TaskStatus.CREATED, TaskStatus.RUNNING):
+                continue
+            age = _seconds_since(task.updated_time, now)
+            if age is None or age <= stale_after_seconds:
+                continue
+            # Snapshot before failing: an in-memory store hands back the live object.
+            previous_status = task.status.value
+            reason = (
+                f"stale: no progress for {int(age)}s "
+                f"(last update {task.updated_time}, threshold {int(stale_after_seconds)}s)"
+            )
+            try:
+                failed = self.fail_task(task.id, reason)
+            except TaskStateError:  # concurrently finished elsewhere; leave it alone
+                continue
+            self.add_metric_events(
+                task.id,
+                "recovery_events",
+                [
+                    {
+                        "occurred_at": now.isoformat(),
+                        "task_id": task.id,
+                        "kind": "stale_recovery",
+                        "previous_status": previous_status,
+                        "stale_seconds": int(age),
+                        "reason": reason,
+                    }
+                ],
+            )
+            recovered.append(failed)
+        return recovered

@@ -193,6 +193,17 @@ curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
 > `API_TOKEN` 留空时不做鉴权：任何能访问该端口的进程都能提交任务，而任务会在沙箱内执行
 > 模型生成的代码。仅限本机自用；一旦监听 `0.0.0.0` 或对外暴露，必须设置 `API_TOKEN`。
 
+### 6.1 运行期行为（重启不丢轨迹 / 卡死任务自愈）
+
+- **任务落盘**：每个任务写成一个 JSON（默认 `.data/tasks/<task_id>.json`，可用 `TASK_STORE_DIR` 改），
+  写入是「临时文件 + 原子替换」，重启 uvicorn 后 `GET /tasks/{id}` 仍能拿到完整步骤与重试事件。
+- **僵死回收**：进程被杀会留下 RUNNING 任务（worker 线程没了、状态不会收敛）。API 启动时以及运行期
+  每 `TASK_REAPER_INTERVAL_SECONDS` 检查一次，把「无进展超过 `TASK_STALE_AFTER_SECONDS`」的非终态任务
+  标记为 FAILED 并写入 `recovery_events`。注意这只收敛**状态记录**，不会去杀已经在执行的代码。
+- **LLM 调用边界**：单次调用超时 `LLM_TIMEOUT` 秒，只对瞬态故障（超时/连接/429/5xx）按指数退避 + 抖动
+  重试 `LLM_MAX_ATTEMPTS` 次，每次尝试写入 `task.metrics["llm_events"]`。SDK 自带的隐藏重试已关闭，
+  避免「两层重试叠加」导致任务长时间卡在 RUNNING。
+
 ---
 
 ## 7. 设计笔记索引

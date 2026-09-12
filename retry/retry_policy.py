@@ -52,6 +52,22 @@ def classify_exception(exc: Exception, _seen: frozenset[int] = frozenset()) -> E
                 return ErrorType.TRANSIENT
             return ErrorType.INVALID_ARGUMENT
 
+    # The OpenAI SDK wraps transport failures in its own hierarchy; APITimeoutError
+    # must be checked before its parent APIConnectionError.
+    try:
+        import openai
+    except ImportError:  # pragma: no cover - openai is a runtime dependency
+        openai = None
+    if openai is not None and isinstance(exc, openai.APIError):
+        if isinstance(exc, openai.APITimeoutError):
+            return ErrorType.TIMEOUT
+        if isinstance(exc, (openai.APIConnectionError, openai.RateLimitError, openai.InternalServerError)):
+            return ErrorType.TRANSIENT
+        if isinstance(exc, (openai.AuthenticationError, openai.PermissionDeniedError)):
+            return ErrorType.PERMISSION_DENIED
+        if isinstance(exc, (openai.BadRequestError, openai.NotFoundError, openai.UnprocessableEntityError)):
+            return ErrorType.INVALID_ARGUMENT
+
     # agent-sandbox ApiError and boto3 ClientError expose different status shapes.
     status = getattr(exc, "status_code", None)
     response = getattr(exc, "response", None)

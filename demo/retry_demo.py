@@ -83,7 +83,7 @@ class ScriptedLLM:
         self.tool_name = tool_name
         self.calls = 0
 
-    def chat(self, messages, tools=None, tool_choice=None):
+    def chat(self, messages, tools=None, tool_choice=None, on_event=None):
         self.calls += 1
         if self.calls == 1:
             message = _message(tool_calls=[_tool_call(self.tool_name)])

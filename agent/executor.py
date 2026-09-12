@@ -50,8 +50,14 @@ class Executor:
             {"role": "user", "content": f"Task: {user_input}\n\nPlan:\n{plan.summary()}"},
         ]
 
-        for _ in range(self._max_iterations):
-            response = self._llm.chat(messages, tools=self._registry.to_openai_tools())
+        for iteration in range(1, self._max_iterations + 1):
+            response = self._llm.chat(
+                messages,
+                tools=self._registry.to_openai_tools(),
+                on_event=self._task_manager.metric_sink(
+                    task_id, "llm_events", phase="execute", iteration=iteration
+                ),
+            )
             message = response.choices[0].message
             messages.append(self._assistant_message(message))
 

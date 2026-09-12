@@ -9,6 +9,7 @@ from agent.planner import Planner
 from core.config import Settings, get_settings
 from sandbox.client import SandboxClient
 from storage.storage_manager import StorageManager
+from task.file_task_store import FileTaskStore
 from task.task_manager import TaskManager
 from tools.file_tool import FileTool
 from tools.report_tool import ReportTool
@@ -33,7 +34,7 @@ def build_orchestrator(settings: Settings | None = None) -> AgentOrchestrator:
     registry.register(FileTool(sandbox))
     registry.register(ReportTool(sandbox, storage, report_prefix=settings.report_prefix))
 
-    task_manager = TaskManager()
+    task_manager = TaskManager(FileTaskStore(settings.task_store_dir))
     llm = LLMClient(settings)
     planner = Planner(llm)
     executor = Executor(llm, registry, task_manager)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import secrets
 import threading
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -20,6 +21,7 @@ from pydantic import BaseModel, Field
 from agent.orchestrator import AgentOrchestrator
 from agent.wiring import build_orchestrator
 from core.config import Settings, get_settings
+from task.task_manager import TaskManager
 from task.task_model import TaskNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -54,14 +56,51 @@ def _run_task(orchestrator: AgentOrchestrator, task_id: str) -> None:
         logger.exception("background task %s failed", task_id)
 
 
+def _recover_stale(task_manager: TaskManager, settings: Settings, where: str) -> None:
+    try:
+        recovered = task_manager.recover_stale_tasks(settings.task_stale_after_seconds)
+    except Exception:  # recovery must never stop the API from serving
+        logger.exception("stale task recovery failed (%s)", where)
+        return
+    if recovered:
+        logger.warning(
+            "recovered %d stale task(s) %s: %s",
+            len(recovered),
+            where,
+            [task.id for task in recovered],
+        )
+
+
+def _start_reaper(task_manager: TaskManager, settings: Settings) -> threading.Event:
+    """Fail tasks whose worker thread died without converging the lifecycle."""
+    stop = threading.Event()
+
+    def loop() -> None:
+        while not stop.wait(settings.task_reaper_interval_seconds):
+            _recover_stale(task_manager, settings, "while running")
+
+    threading.Thread(target=loop, name="task-reaper", daemon=True).start()
+    return stop
+
+
 def create_app(
     orchestrator: AgentOrchestrator | None = None,
     settings: Settings | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
-    orchestrator = orchestrator or build_orchestrator()
-    app = FastAPI(title="Document Specialist Agent")
+    orchestrator = orchestrator or build_orchestrator(settings)
     guard = Depends(_token_guard(settings))
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        _recover_stale(orchestrator.task_manager, settings, "on startup")
+        stop = _start_reaper(orchestrator.task_manager, settings)
+        try:
+            yield
+        finally:
+            stop.set()
+
+    app = FastAPI(title="Document Specialist Agent", lifespan=lifespan)
 
     @app.post("/tasks", status_code=201, dependencies=[guard])
     def create_task(request: CreateTaskRequest):

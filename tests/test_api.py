@@ -1,11 +1,13 @@
 """Light API tests using TestClient with a fake orchestrator."""
 
 import time
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
 from api.app import create_app
 from core.config import Settings
+from task.file_task_store import FileTaskStore
 from task.task_manager import TaskManager
 
 
@@ -107,3 +109,22 @@ def test_requests_with_token_allowed():
 
     assert status == "SUCCESS"
     assert client.get("/tasks", headers=headers).status_code == 200
+
+
+def test_startup_recovers_stale_tasks(tmp_path):
+    manager = TaskManager(FileTaskStore(tmp_path))
+    task = manager.create_task("abandoned by a dead worker")
+    manager.start_task(task.id)
+    record = manager.get_task(task.id)
+    record.updated_time = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    manager.store.update(record)
+
+    orchestrator = FakeOrchestrator()
+    orchestrator.task_manager = manager
+    settings = Settings(_env_file=None, task_stale_after_seconds=60)
+
+    with TestClient(create_app(orchestrator, settings)) as client:
+        body = client.get(f"/tasks/{task.id}").json()
+
+    assert body["status"] == "FAILED"
+    assert "stale" in body["error"]

@@ -36,6 +36,8 @@ class Settings(BaseSettings):
         from security.permission_manager import object_key, workspace_path
         if self.sandbox_default_timeout > self.sandbox_max_timeout:
             raise ValueError("default timeout must not exceed max timeout")
+        if self.llm_retry_base_delay > self.llm_retry_max_delay:
+            raise ValueError("llm retry base delay must not exceed max delay")
         workspace_path(self.sandbox_workspace, ".", allow_root=True)
         object_key(self.report_prefix, self.report_prefix.rstrip("/") + "/probe")
         return self
@@ -54,6 +56,19 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_base_url: str = "https://api.deepseek.com"
     llm_model: str = "deepseek-chat"
+    # Per-attempt HTTP timeout and the retry budget around a single chat call.
+    # The SDK default (10 min, 2 hidden retries) can leave a task stuck in RUNNING.
+    llm_timeout: float = Field(default=60.0, gt=0)
+    llm_max_attempts: int = Field(default=3, ge=1)
+    llm_retry_base_delay: float = Field(default=1.0, ge=0)
+    llm_retry_max_delay: float = Field(default=10.0, ge=0)
+
+    # Task persistence + stale-run recovery (a process restart must not lose history).
+    task_store_dir: str = Field(default=".data/tasks", min_length=1)
+    # Only tasks with no progress for this long are marked FAILED after a restart.
+    # Keep it well above the slowest single step (LLM attempts + tool timeouts).
+    task_stale_after_seconds: int = Field(default=1800, ge=1)
+    task_reaper_interval_seconds: int = Field(default=60, ge=1)
 
 
 @lru_cache(maxsize=1)

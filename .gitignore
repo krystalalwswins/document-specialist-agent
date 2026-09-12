@@ -24,6 +24,9 @@ venv/
 .coverage
 htmlcov/
 
+# 运行期数据（任务落盘目录）
+.data/
+
 # 操作系统
 Thumbs.db
 .DS_Store

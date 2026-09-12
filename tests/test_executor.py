@@ -55,7 +55,7 @@ class FakeLLM:
         self.responses = list(responses)
         self.calls = []
 
-    def chat(self, messages, tools=None, tool_choice=None):
+    def chat(self, messages, tools=None, tool_choice=None, on_event=None):
         self.calls.append({"messages": messages, "tools": tools})
         return SimpleNamespace(choices=[SimpleNamespace(message=self.responses.pop(0))])
 

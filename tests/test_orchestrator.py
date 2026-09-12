@@ -4,12 +4,13 @@ import pytest
 
 from agent.orchestrator import AgentOrchestrator
 from agent.planner import Plan, PlanStep
+from task.file_task_store import FileTaskStore
 from task.task_manager import TaskManager
 from task.task_model import TaskStatus
 
 
 class FakePlanner:
-    def plan(self, user_input):
+    def plan(self, user_input, on_event=None):
         return Plan(user_input=user_input, steps=[PlanStep(name="step", tool="echo")])
 
 
@@ -55,7 +56,7 @@ def test_orchestrator_failure_marks_task_failed_and_reraises():
 
 def test_orchestrator_planner_failure_marks_task_failed():
     class BrokenPlanner:
-        def plan(self, user_input):
+        def plan(self, user_input, on_event=None):
             raise RuntimeError("plan failed")
 
     task_manager = TaskManager()
@@ -67,3 +68,19 @@ def test_orchestrator_planner_failure_marks_task_failed():
     with pytest.raises(RuntimeError, match="plan failed"):
         orchestrator.run("x")
     assert task_manager.list_tasks()[0].status == TaskStatus.FAILED
+
+
+def test_run_task_returns_the_persisted_final_state(tmp_path):
+    """A persistent store returns copies, so run_task must re-read before returning."""
+    task_manager = TaskManager(FileTaskStore(tmp_path))
+    orchestrator = AgentOrchestrator(
+        task_manager=task_manager,
+        planner=FakePlanner(),
+        executor=FakeExecutor(result="the answer"),
+    )
+
+    task = orchestrator.run("analyze excel")
+
+    assert task.status is TaskStatus.SUCCESS
+    assert task.result == {"answer": "the answer"}
+    assert task_manager.get_task(task.id).status is TaskStatus.SUCCESS
