@@ -1,258 +1,259 @@
 # Document Specialist Agent
 
-面向文档处理与代码执行的 Agent Runtime 原型 —— 基于 [agent-infra/sandbox](https://github.com/agent-infra/sandbox)（AIO Sandbox）二次开发。
+面向**文档处理与代码执行**的 Agent Runtime 原型。
 
-一句话定位：从“能跑通的 demo 脚本”升级为**有任务生命周期、工具注册表、计划-执行循环的 Agent 运行时**；沙箱作为隔离执行层，对象存储作为结果层。
+大模型的工具调用被放进一个可追踪、有执行限制、能处理异常的程序里：模型负责规划步骤、调用工具、根据执行结果继续处理；运行时负责隔离执行、任务生命周期、产物交付与执行轨迹。
 
-当前交付依据：[简历对标与五批计划](docs/DELIVERY_PLAN.md)。第一批 Retry/Security 的代码与离线验证已完成，真实 Docker 验收待完成；详见 [验证记录](docs/verification/01_security.md) 和 [Design Note](docs/design/10_security_module.md)。
-
-开发定位：单用户本地原型。当前共享容器/文件系统、内存任务记录、未鉴权 API；尚未完成恶意多租户隔离和持久化执行轨迹。
+基于 [agent-infra/sandbox](https://github.com/agent-infra/sandbox)（AIO Sandbox，v1.11.0 / Python SDK 0.0.30）二次开发。上游提供隔离的执行环境（Shell / File / Jupyter / Browser / MCP），本项目补上它之外的 **Agent 运行时层**：规划、执行、工具、任务、权限、产物、恢复。
 
 ---
 
-## 1. 上游项目调研
+## 1. 要解决的问题
 
-> 调研时间：2026-08-30。依据官方 GitHub README、`sdk/python` 官方说明与官方文档站直接核实，非二手资料。
+直接与大模型对话，通常能拿到处理建议或代码；但从"代码"到"真正执行"，再到"拿到可用文件"，中间仍然依赖人工：复制代码、准备环境、上传文件、取回结果、处理报错。
 
-### 1.1 项目定位
+本项目把这一段做成运行时：
 
-| 项 | 内容 |
-| --- | --- |
-| 仓库 | https://github.com/agent-infra/sandbox |
-| 定位 | AI Agent 一体化沙箱：Browser / Shell / File / VSCode / Jupyter / MCP 聚合在单个 Docker 容器，共享文件系统 |
-| 本质 | Agent Infra 层，不是业务 Agent（这正是本项目要补的层） |
-| License | Apache-2.0 |
-| SDK | Python: `agent-sandbox`；TS: `@agent-infra/sandbox`；Go: `sandbox-sdk-go` |
+- **可追踪**：任务与步骤两级状态、工具调用、重试、校验、恢复事件全部留痕；
+- **有执行限制**：代码只在容器沙箱内执行，受超时、资源、工具白名单与路径白名单约束；
+- **能处理异常**：瞬态故障按指数退避重试，产物不符则重新生成，进程重启后回收僵死任务；
+- **交付产物**：结果落盘到对象存储，返回有时效的下载链接。
 
-### 1.2 已核实的 SDK 事实
-
-- Python SDK 官方要求 **Python 3.8+**；本机默认 base 环境是 3.7.0，不满足，已迁移。
-- 环境决策（2026-08-30 实测）：使用 **Python 3.13.2**（`C:\Users\Administrator\AppData\Local\Programs\Python\Python313\python.exe`）创建项目 venv（`.venv`）；3.11.9 作为兼容性回退。
-- 当前适配并锁定 `agent-sandbox==0.0.30`，接口以该版本为准。
-- 客户端形态：`Sandbox`（同步）与 `AsyncSandbox`（异步）两种。
-- 当前代码使用的 API 与官方 README 一致，未用过时接口：
-
-| 能力 | 官方 API |
-| --- | --- |
-| 环境信息 | `client.sandbox.get_context().home_dir` |
-| Shell | `client.shell.exec_command()` |
-| 文件 | `client.file.read_file() / write_file()` |
-| Python 执行 | `client.jupyter.execute_code()` |
-| Node.js 执行 | `client.nodejs.execute_nodejs_code()` |
-| HTTP API | `/v1/sandbox`、`/v1/shell/exec`、`/v1/file/read`、`/v1/file/write`、`/v1/browser/screenshot`、`/v1/jupyter/execute` |
-
-### 1.3 部署对齐（docker-compose）
-
-本项目 docker-compose 使用的镜像 `enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:1.11.0` 是官方对中国大陆用户推荐的 pin 版本；`seccomp:unconfined`、`shm_size: 2gb`、`127.0.0.1:8080` 端口绑定均与官方一致。
-
-当前 compose 已配置工作区卷、`SANDBOX_API_KEY` 环境变量和 host-gateway。API key 留空仍不开启鉴权，使用时需自行设置。
-
-本批增加 CPU、总内存、swap 和 PID 限制，MinIO 端口绑定本机。`shm_size` 只配置共享内存，不代表总内存上限。配置实际生效需运行 `python -m demo.security_smoke` 验证。
-
-保留上游的 `seccomp:unconfined`，这是开发容器，不能据此宣称完全抵御恶意代码或限制其所有网络访问。
-
-### 1.4 可复用能力（对文档处理定位）
-
-官方预置 MCP server：`browser` / `file` / `shell` / **`markitdown`**（`convert` / `extract_text` / `extract_images`）。
-
-markitdown 是文档处理 Agent 的核心能力来源，计划在 Phase 2 通过 MCP Tool Adapter 接入本项目的 Tool Registry，而不是让 LLM 手写文档解析代码。
-
-### 1.5 二进制文件方案（已实测确认）
-
-直接读 SDK 源码确认：`file.write_file` 的 `encoding` 参数支持 `utf-8 / base64 / raw`，二进制文件统一 base64 写入；`file.download_file` 以字节流读出。另有 `str_replace_editor` 内置 Excel/PDF/PPTX 查看能力。方案 A（base64）为官方能力，无需 curl 下载。
+典型任务："沙箱里有一份 sales.xlsx，按区域汇总收入，把结果存成 reports/q3_summary.xlsx 并给我下载链接。"
 
 ---
 
-## 2. 当前代码评估摘要
-
-当前代码已具备任务/步骤状态机、三层编排、多轮 Tool Calling、三个可插拔工具、二进制传输和工具重试。
-
-第一批补齐异常分类、重放安全声明、参数校验、工具/路径权限、拒绝审计、执行超时上限和独立 Jupyter 会话清理，同时修正了 SDK 响应 envelope 解析。任务持久化、产物达标校验和 Memory/Evaluation 仍按交付计划推进。
-
-Python 每次调用使用新 session，跨调用状态请保存为工作区文件。超时或执行状态不确定时终止当前任务，不让模型继续重放代码。独立 session 不隔离共享文件系统。
-
----
-
-## 3. 目标架构
+## 2. 架构
 
 ```text
-                 User
-                  |
-                  |
-             API Layer
-                  |
-                  |
-          Agent Orchestrator
-                  |
-        --------------------
-        |        |         |
-     Planner   Memory    Tool Registry
-        |
-        |
-    Task Executor
-        |
-        |
-   Sandbox Runtime
-        |
-        |
- Docker Container
-        |
-        |
- Result Storage
+                     HTTP API（FastAPI）
+          POST /tasks · GET /tasks/{id} · /health
+                           │
+                  TaskWorkerPool（有界 worker）
+                           │
+                  AgentOrchestrator
+        ┌──────────────┬──────────────┬──────────────┐
+        │              │              │              │
+   TaskManager      Planner        Executor     InputStager
+   状态机/落盘    结构化计划    多轮 tool-loop   OSS → 沙箱
+        │              │              │              │
+        └──────────────┴──────┬───────┴──────────────┘
+                              │
+                        ToolRegistry
+              权限校验 · Schema 校验 · 任务级参数重写
+        ┌──────────┬──────────┬──────────────┬──────────┐
+        │          │          │              │          │
+   run_python  read_file  parse_document  save_report
+        │          │          │              │          │
+        └──────────┴──────────┴──────────────┴──────────┘
+                              │
+                   Docker Sandbox（隔离执行）
+                              │
+              ArtifactValidator → 对象存储（MinIO/S3）
+                              │
+                        预签名下载链接
 ```
+
+**一次任务的时序**：提交 → 建任务 → 装载输入 → 规划 → 多轮工具调用（沙箱执行）→ 产物校验 → 成功/失败 → 下载链接。
 
 ---
 
-## 4. Phase 1 目录规划
+## 3. 核心能力
+
+### Agent Loop
+
+- **Planner**：用 `create_plan` 函数调用强制结构化输出计划，空计划直接失败，不盲执行。
+- **Executor**：多轮 tool-calling 循环——模型决策 → 工具执行 → 结果回传 → 再决策，直到产出最终答案。
+- **终止控制**：`max_iterations` 限制单次执行的轮数；单步失败不中断，错误交回模型决定换路。
+- **可观测**：每次 LLM 调用与工具调用都写入任务指标（`llm_events` / `retry_events`）。
+
+### 任务生命周期
+
+- Task / TaskStep 两级状态机（`CREATED → RUNNING → SUCCESS/FAILED`），非法流转直接拒绝。
+- 异步执行：`POST /tasks` 立即返回任务 id，由有界 worker 池执行；超出 `TASK_MAX_WORKERS + TASK_MAX_PENDING` 返回 429。
+- 落盘留存：每个任务写成一份 JSON（原子写），重启后 `GET /tasks/{id}` 仍能拿到完整轨迹。
+- 僵死回收：进程被杀会留下 RUNNING 任务，启动时与运行期按"无进展超时"判 FAILED 并记录 `recovery_events`（只收敛状态，不声称终止已在执行的代码）。
+
+### 工具管理
+
+- **可插拔 Tool Registry**：注册即生效，Schema 自动生成给模型，新增工具不需要改 Executor。
+- 注册时校验 JSON Schema（含禁止外部 `$ref`），调用前做参数 Schema 校验与权限校验。
+- 内置工具：
+
+  | 工具 | 作用 |
+  | --- | --- |
+  | `run_python` | 在沙箱内执行 Python（默认超时；超时或状态未知时终止任务，不重放） |
+  | `read_file` | 读取文本文件；遇到二进制文档直接提示改用 `parse_document` |
+  | `parse_document` | PDF / Excel / PPTX / DOCX / CSV / JSON → Markdown |
+  | `save_report` | 沙箱文件 → 对象存储 → 预签名下载链接 |
+
+### 隔离与安全
+
+- **容器沙箱**：Agent 生成的代码只在 AIO Sandbox 容器内执行；compose 中限制了 CPU / 内存 / PID 配额。
+- **任务级隔离**：每个任务拥有独立沙箱目录 `tasks/<task_id>` 与独立对象前缀 `reports/<task_id>/`。工具参数在调用前被重写进任务命名空间，跨任务路径直接拒绝；`run_python` 的工作目录也由运行时注入，模型无法写到共享根目录。两个同名输入、同名产物的任务并发执行不会互相覆盖。
+- **权限白名单**：工具白名单 + 权限声明 + 工作区路径校验（拦截 `..`、绝对路径、符号链接逃逸）+ 对象前缀校验。
+- **输入装载**：`input_files` 指定的对象键必须落在 `INPUT_PREFIX` 下，越界、缺失、空对象都会让任务以明确原因失败。
+- **API 鉴权**：设置 `API_TOKEN` 后，所有请求需带 `X-API-Token`（常量时间比较）。
+
+### 产物交付与校验
+
+- `save_report` 上传后返回结构化产物记录（对象键、字节数、类型）与预签名 URL。
+- **产物校验**：任务成功前逐个回查对象存储（存在、非空、字节数一致），结果写 `validation_events`；校验不过不会出现"模型说做完了但产物不对"的假成功。
+- `require_artifact: true` 时，"一个产物都没产出"同样算校验失败。
+- 预签名 URL 可用 `MINIO_PUBLIC_ENDPOINT` 按对外地址签名（SigV4 覆盖 Host，必须用它签名而非事后替换主机名）。
+
+### 异常恢复
+
+- **错误分类**：`TRANSIENT / TIMEOUT / INVALID_ARGUMENT / PERMISSION_DENIED / EXECUTION / BUSINESS`，只重试可恢复的瞬态故障。
+- **指数退避 + 抖动**：避免重试风暴；每次尝试记录 8 字段事件，便于定位失败链路。
+- **LLM 调用边界**：单次调用超时（默认 60s），关闭 SDK 自带隐藏重试，由统一策略重试，避免任务长时间卡在 RUNNING。
+- **产物修复重试**：校验失败时在 `TASK_MAX_RECOVERY_ATTEMPTS` 内带着失败原因重跑，提示模型重新生成产物；仍不通过才判 FAILED。
+
+---
+
+## 4. 目录结构
 
 ```text
 document-specialist-agent/
-├── agent/                  # Orchestrator + Planner + Executor
-│   ├── orchestrator.py
-│   ├── planner.py
-│   └── executor.py
-├── task/                   # 任务生命周期
-│   ├── task_model.py
-│   └── task_manager.py
-├── tools/                  # 工具注册表
-│   ├── base_tool.py
-│   ├── tool_registry.py
-│   ├── sandbox_tool.py
-│   ├── file_tool.py
-│   └── report_tool.py
-├── sandbox/                # 由 hermes_hooks.py 拆分重构
-│   ├── client.py
-│   └── hooks.py
-├── storage/                # 由 storage_manager.py 迁移
-│   └── storage_manager.py
-├── core/                   # 由 config.py 迁移
-│   └── config.py
-├── demo/                   # 原 agent_core.py main 降级为 demo 脚本
-├── tests/
-├── docker-compose.yaml
-├── requirements.txt
-└── README.md
+├── agent/            # Orchestrator / Planner / Executor / LLM 客户端 / 产物校验 / 装配
+├── api/              # FastAPI 入口 + 有界 worker 池
+├── core/             # 配置（pydantic-settings）
+├── task/             # 任务模型、状态机、Manager、落盘存储
+├── tools/            # BaseTool + Registry + 具体工具
+├── sandbox/          # 沙箱客户端防腐层、输入装载、Hook
+├── security/         # 权限与路径/对象键策略
+├── storage/          # 对象存储封装（MinIO / S3 兼容）
+├── retry/            # 错误分类 + 重试策略
+├── demo/             # 端到端与离线演示脚本
+├── docs/design/      # 各模块设计笔记
+└── tests/            # 离线单元/集成测试（fake LLM / SDK / S3）
 ```
 
 ---
 
-## 5. 开发路线
+## 5. 快速开始
 
-### Phase 1 —— MVP（当前）
+前置：Python 3.10+（本地实测 3.13.2）、Docker Desktop、一个 OpenAI 兼容的模型 API Key（默认 DeepSeek）。
 
-1. 环境与骨架：Python 3.13 venv、git init、目录结构、README
-2. ✅ `core/config.py` + Storage 重构：去 import 副作用、lazy bucket、`.env` 加载（根目录 `config.py` / `storage_manager.py` 已降级为兼容 shim，待迁移后删除）
-3. ✅ `task/`：Task 模型 + TaskManager（内存实现 + 存储接口抽象，后续可换 Redis）
-4. ✅ `tools/`：BaseTool + ToolRegistry + sandbox/file/report 具体工具
-5. ✅ `sandbox/`：Hook 重构、二进制安全传输（base64）、统一输出解析
-6. ✅ `agent/`：Planner（LLM 结构化计划）→ Executor（多轮 tool-calling 循环）→ Orchestrator
-7. ✅ 最小 API：FastAPI `POST /tasks`、`GET /tasks/{id}`
+```powershell
+# 1. 依赖
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
 
-### Phase 2 —— 工程增强
+# 2. 启动沙箱与对象存储
+docker compose up -d
 
-- `memory/`：短期（任务上下文）+ 长期（历史任务），Redis
-- ✅ `retry/`：工具失败自动重试策略（ErrorType + RetryPolicy + Executor 集成）
-- `security/`：工具/文件/对象前缀权限已实现并离线验证；真实沙箱验收待完成，不提供任意 Python 命令黑名单保证
-- `evaluation/`：成功率、工具调用次数、耗时、Token 消耗
-- `tools/mcp_adapter.py`：接入沙箱预置 MCP server（markitdown / file / shell）
+# 3. 配置：把 .env.example 复制为 .env，至少填 LLM_API_KEY
+Copy-Item .env.example .env
+
+# 4. 跑测试（全部离线，不需要 Docker 与 API Key）
+.venv\Scripts\python.exe -m pytest -q
+
+# 5. 启动 API
+.venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8000
+```
+
+可选演示脚本（前三个离线，`run_demo` 与 `security_smoke` 需要 Docker + LLM Key）：
+
+```powershell
+.venv\Scripts\python.exe -m demo.run_demo        # CSV → OSS → 沙箱 → Agent → 产物链接
+.venv\Scripts\python.exe -m demo.retry_demo      # 重试策略 4 个场景
+.venv\Scripts\python.exe -m demo.security_demo   # 权限与拒绝审计 6 个场景
+.venv\Scripts\python.exe -m demo.security_smoke  # 沙箱配额与会话检查
+```
 
 ---
 
-## 6. 快速开始
+## 6. API
+
+| 端点 | 说明 |
+| --- | --- |
+| `POST /tasks` | 提交任务，立即返回任务（`CREATED`）；队列满返回 **429** |
+| `GET /tasks/{id}` | 查询状态、步骤、产物、指标事件；不存在返回 404 |
+| `GET /tasks` | 列出全部任务 |
+| `GET /health` | 服务状态与 worker 池统计 |
+
+请求体（`POST /tasks`）：
+
+```json
+{
+  "user_input": "读取 sales.xlsx，按区域汇总收入，保存为 reports/q3_summary.xlsx",
+  "input_files": [{"oss_key": "raw/sales.xlsx", "filename": "sales.xlsx"}],
+  "require_artifact": true
+}
+```
+
+- `input_files`：先把对象从存储装载进沙箱，并把沙箱内的绝对路径告诉模型（可选）。
+- `require_artifact`：要求任务必须产出可下载产物（可选，默认 false）。
+
+调用示例（设置了 `API_TOKEN` 时需带请求头）：
 
 ```powershell
-# 1. 创建虚拟环境（首次）
-& 'C:\Users\Administrator\AppData\Local\Programs\Python\Python313\python.exe' -m venv .venv
-
-# 2. 安装依赖（首次；若默认源失败，追加 -i https://pypi.org/simple）
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-
-# 3. 启动本地服务（沙箱 + MinIO）
-docker compose up -d
-
-# 4. 激活环境（每个新终端）
-.venv\Scripts\Activate.ps1
-
-# 5. 运行测试
-python -m pytest
-
-# 6. 端到端 Demo（需先设置 .env 的 LLM_API_KEY，并 docker compose up -d）
-python -m demo.run_demo
-
-# 7. 启动 API（另开终端；任务执行时才真正用到 LLM_API_KEY）
-.venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8000
-
-# 8. 调用（若 .env 设置了 API_TOKEN，则每个请求都要带 X-API-Token 头）
 curl -X POST http://127.0.0.1:8000/tasks -H "Content-Type: application/json" ^
   -H "X-API-Token: <你的 API_TOKEN>" ^
-  -d "{\"user_input\":\"读取 sales.xlsx，按区域汇总收入，保存为 reports/q3_summary.xlsx\",\"input_files\":[{\"oss_key\":\"raw/sales.xlsx\"}],\"require_artifact\":true}"
+  -d "{\"user_input\":\"读取 input.csv，统计各部门平均薪资并保存为 reports/summary.csv\",\"require_artifact\":true}"
 
 curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
 ```
 
-> `API_TOKEN` 留空时不做鉴权：任何能访问该端口的进程都能提交任务，而任务会在沙箱内执行
-> 模型生成的代码。仅限本机自用；一旦监听 `0.0.0.0` 或对外暴露，必须设置 `API_TOKEN`。
-
-### 6.1 运行期行为（重启不丢轨迹 / 卡死任务自愈）
-
-- **任务落盘**：每个任务写成一个 JSON（默认 `.data/tasks/<task_id>.json`，可用 `TASK_STORE_DIR` 改），
-  写入是「临时文件 + 原子替换」，重启 uvicorn 后 `GET /tasks/{id}` 仍能拿到完整步骤与重试事件。
-- **僵死回收**：进程被杀会留下 RUNNING 任务（worker 线程没了、状态不会收敛）。API 启动时以及运行期
-  每 `TASK_REAPER_INTERVAL_SECONDS` 检查一次，把「无进展超过 `TASK_STALE_AFTER_SECONDS`」的非终态任务
-  标记为 FAILED 并写入 `recovery_events`。注意这只收敛**状态记录**，不会去杀已经在执行的代码。
-- **LLM 调用边界**：单次调用超时 `LLM_TIMEOUT` 秒，只对瞬态故障（超时/连接/429/5xx）按指数退避 + 抖动
-  重试 `LLM_MAX_ATTEMPTS` 次，每次尝试写入 `task.metrics["llm_events"]`。SDK 自带的隐藏重试已关闭，
-  避免「两层重试叠加」导致任务长时间卡在 RUNNING。
-- **任务输入装载**：`POST /tasks` 的 `input_files` 接受 OSS 对象键（默认限定在 `INPUT_PREFIX`，默认 `raw/`），
-  在规划前把文件写进沙箱，并把绝对路径告诉模型；键不存在/对象为空会直接让任务 FAILED，错误信息里带原因。
-  所有路径都过 `workspace_path` 校验，越界与穿越会被拒绝。
-- **产物校验**：`save_report` 会带上产物元数据（对象键、字节数、类型），任务成功前逐个回查对象存储
-  （存在、非空、字节数一致），结果写入 `task.metrics["validation_events"]`；校验不过的任务判 FAILED，
-  不会出现「模型说做完了但其实没有产物」的假成功。校验通过的产物列表放在 `result.artifacts`。
-- **任务级隔离**：每个任务拥有自己的沙箱目录 `<SANDBOX_WORKSPACE>/tasks/<task_id>`（见 `task.workspace_dir`）
-  和对象前缀 `<REPORT_PREFIX>/<task_id>/`。工具参数在调用前由 Registry 重写进任务命名空间
-  （文件路径落到任务目录、对象键改挂到任务前缀），跨任务路径直接被拒；`run_python` 的工作目录
-  也由运行时注入任务目录，模型无法用相对路径写到共享根目录。两个同名输入、同名产物的任务并发执行
-  不会互相覆盖。
-- **文档解析工具**：`parse_document` 用沙箱内的 PyMuPDF / openpyxl / python-pptx / docx2txt 把
-  PDF、Excel、PPTX、DOCX、CSV 等转成 markdown（转换脚本由运行时提供，不让模型现场写解析代码）；
-  完整结果写入任务目录下的 `<文件名>.md`，返回给模型的只是 `DOCUMENT_MAX_CHARS` 以内的预览。
-  `read_file` 遇到二进制文档会直接提示改用 `parse_document`，不再浪费一轮去撞解码错误。
-- **有限恢复**：产物校验失败时，任务不会被立刻判死，而是在 `TASK_MAX_RECOVERY_ATTEMPTS` 次内带着
-  失败原因重跑一轮（提示模型重新生成并保存产物），修复过程写入 `recovery_events`；只有仍不通过才判 FAILED。
-  请求里设 `require_artifact: true` 时，"一个产物都没产出"也算校验失败。
-- **并发上限与队列**：`POST /tasks` 不再无限起线程，而是进入 `TASK_MAX_WORKERS` 个 worker 的池子，
-  在飞任务超过 `TASK_MAX_WORKERS + TASK_MAX_PENDING` 时直接返回 **429**（并把该任务标记 FAILED，
-  避免留下永远不会执行的任务）；`GET /health` 返回 worker 统计。
-- **下载链接对外可达**：设置 `MINIO_PUBLIC_ENDPOINT` 后，预签名 URL 会用该地址签名（SigV4 覆盖 Host，
-  所以必须用它签名而不是事后替换主机名）；要让同网段其他机器访问，把 `MINIO_BIND_HOST` 设为 `0.0.0.0`。
+> 未设置 `API_TOKEN` 时不做鉴权：任何能访问该端口的进程都能提交任务，而任务会在沙箱内执行模型生成的代码。仅限本机自用；一旦监听 `0.0.0.0` 或对外暴露，必须设置 `API_TOKEN`。
 
 ---
 
-## 7. 设计笔记索引
+## 7. 配置项
 
-每个模块交付时附 Design Note，统一按 [TEMPLATE.md](docs/design/TEMPLATE.md) 的 10 小节模板编写，归档于 `docs/design/`。
+全部通过 `.env` 或环境变量注入，完整示例见 [.env.example](.env.example)。
 
-- [01_task_module.md](docs/design/01_task_module.md)：任务生命周期模块
-- [02_config_and_storage.md](docs/design/02_config_and_storage.md)：配置与对象存储模块
-- [03_sandbox_module.md](docs/design/03_sandbox_module.md)：沙箱集成层（SDK 封装 + 二进制安全 Hook）
-- [04_agent_module.md](docs/design/04_agent_module.md)：Agent 编排层（Planner / Executor / Orchestrator + tools 抽象）
-- [05_tools_integration.md](docs/design/05_tools_integration.md)：具体工具与组装（sandbox/file/report + wiring + demo）
-- [06_api_layer.md](docs/design/06_api_layer.md)：最小 API 层（FastAPI + 后台执行）
+| 分组 | 变量 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| 沙箱 | `SANDBOX_BASE_URL` | `http://localhost:8080` | AIO Sandbox 地址 |
+| 沙箱 | `SANDBOX_WORKSPACE` | `/home/gem/workspace` | 沙箱工作区根目录 |
+| 沙箱 | `SANDBOX_API_KEY` | 空 | 沙箱鉴权头；为空则沙箱 API 完全开放 |
+| 沙箱 | `SANDBOX_DEFAULT_TIMEOUT` / `SANDBOX_MAX_TIMEOUT` | `30` / `120` | 代码执行默认与最大超时（秒） |
+| 沙箱 | `SANDBOX_CPUS` / `SANDBOX_MEMORY` / `SANDBOX_PIDS_LIMIT` | `2.0` / `4g` / `512` | 容器配额（compose 使用） |
+| 权限 | `ALLOWED_TOOLS` | 四个内置工具 | 工具白名单（JSON 数组） |
+| 权限 | `ALLOWED_PERMISSIONS` | `sandbox.execute` / `file.read` / `artifact.write` | 权限白名单 |
+| 权限 | `REPORT_PREFIX` / `INPUT_PREFIX` | `reports` / `raw` | 产物对象前缀 / 输入对象前缀 |
+| 存储 | `MINIO_ENDPOINT` | `http://localhost:9000` | 对象存储地址 |
+| 存储 | `MINIO_PUBLIC_ENDPOINT` | 空 | 生成下载链接用的对外地址 |
+| 存储 | `MINIO_BIND_HOST` | `127.0.0.1` | MinIO 在宿主机上的监听地址（`0.0.0.0` = 局域网可访问） |
+| 模型 | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | — / `https://api.deepseek.com` / `deepseek-chat` | OpenAI 兼容模型配置 |
+| 模型 | `LLM_TIMEOUT` / `LLM_MAX_ATTEMPTS` | `60` / `3` | 单次调用超时与重试预算 |
+| 模型 | `LLM_RETRY_BASE_DELAY` / `LLM_RETRY_MAX_DELAY` | `1` / `10` | 退避区间（秒） |
+| 任务 | `TASK_STORE_DIR` | `.data/tasks` | 任务落盘目录 |
+| 任务 | `TASK_STALE_AFTER_SECONDS` / `TASK_REAPER_INTERVAL_SECONDS` | `1800` / `60` | 僵死判定阈值与巡检间隔 |
+| 任务 | `TASK_MAX_WORKERS` / `TASK_MAX_PENDING` | `2` / `32` | 并发 worker 数与可排队数 |
+| 任务 | `TASK_MAX_RECOVERY_ATTEMPTS` | `1` | 产物校验失败后的修复重试次数 |
+| 文档 | `DOCUMENT_MAX_CHARS` | `20000` | `parse_document` 返回给模型的字符预算 |
+| 接口 | `API_TOKEN` | 空 | 为空则不做鉴权 |
 
-- [07_retry_design_review.md](docs/design/07_retry_design_review.md)：历史重试评审
-- [08_retry_module.md](docs/design/08_retry_module.md)：历史重试实现
-- [09_security_design_review.md](docs/design/09_security_design_review.md)：第一批设计评审
-- [10_security_module.md](docs/design/10_security_module.md)：第一批实现与面试说明
+---
 
-## 8. 第一批验证
+## 8. 测试
 
-```bash
-python -m pytest -q
-python -m demo.retry_demo
-python -m demo.security_demo
-# 需启动 Docker 沙箱，不需要 LLM key；退出 2 表示未验证
-python -m demo.security_smoke
+```powershell
+.venv\Scripts\python.exe -m pytest -q
+# 242 passed, 1 skipped
 ```
 
-工作区路径检查同时用于 Hook 和工具；生产装配可通过 `.env` 中的 JSON 数组 `ALLOWED_TOOLS` / `ALLOWED_PERMISSIONS` 控制模型可用工具。新增工具默认不自动重试，只有可安全重放时才声明 `retry_safe = True`。
+默认全部离线：LLM、沙箱 SDK、S3 均使用 fake，不需要 Docker 与 API Key。跳过的 1 条是"符号链接路径守卫"——Windows 未开启开发者模式时无法创建符号链接，在 Linux 上会执行。
+
+真机链路（Docker + LLM Key）另行验证，覆盖：输入装载、沙箱执行、PDF/Excel 解析、产物上传与预签名下载、并发任务隔离、产物校验与修复重试、僵死任务回收。
+
+---
+
+## 9. 已知限制
+
+- **沙箱是单容器共享内核**：文件层面已按任务隔离，但代码执行仍共用同一个容器；要做强隔离或真正并行，需要一任务一容器或沙箱池。
+- **任务存储是单进程文件存储**：多 worker 部署需要换成 Redis 等共享存储。
+- **无多租户**：没有账号体系，`GET /tasks` 返回该实例的全部任务。
+- **无 Token / 成本计量**：`metrics` 预留了字段，尚未统计 token 消耗。
+- **无 CI 与部署产物**：仓库没有 GitHub Actions，也没有 API 服务自身的 Dockerfile 与反向代理配置。
+- 沙箱容器使用 `seccomp:unconfined`，且默认不启用 `SANDBOX_API_KEY`——这是本地原型的安全边界，不适合直接暴露到公网。
+
+---
+
+## 10. 设计文档
+
+- `docs/design/01_task_module.md` ~ `10_security_module.md`：各模块设计笔记（统一 10 小节模板）。
+- `docs/verification/01_security.md`：安全模块的验证记录（含未验证边界）。
