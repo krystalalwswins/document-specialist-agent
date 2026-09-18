@@ -1,6 +1,7 @@
 """P0-1: plan contract, graph validation and backward-compatible persistence."""
 
 import json
+from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
@@ -181,3 +182,217 @@ def test_plan_write_failure_prevents_tool_execution(tmp_path):
     assert calls == []
     assert manager.get_task(task.id).status.value == "FAILED"
     assert manager.get_task(task.id).plan is None
+
+
+# --- P0-2: versioned replanning, plan events and tool-call binding -------------
+
+def plan_v2_data():
+    data = plan_data()
+    data["version"] = 2
+    data["steps"][0] = {
+        "step_id": "report_v2", "name": "save", "description": "save the revised summary",
+        "depends_on": ["read"], "completion_criteria": ["Report exists and is nonempty"],
+        "tool": "save_report",
+    }
+    return data
+
+
+def _running_task_with_plan(manager, task_id):
+    manager.start_task(task_id)
+    manager.set_plan(task_id, Plan.from_dict(plan_data()))
+    manager.add_step(task_id, "read_file", tool="read_file", plan_step_id="read",
+                     tool_call_id="call_1")
+    manager.add_plan_events(task_id, [{
+        "kind": "plan_step_completed", "step_id": "read", "version": 1,
+        "evidence": "Sales columns are identified",
+    }])
+    return manager.get_task(task_id)
+
+
+def test_plan_creation_and_replanning_are_recorded_as_versioned_events():
+    manager = TaskManager()
+    task = manager.create_task("summarize sales")
+    created = _running_task_with_plan(manager, task.id).plan_events[0]
+    assert created["kind"] == "plan_created"
+    assert created["version"] == 1
+    assert created["step_ids"] == ["report", "read"]
+
+    manager.replace_plan(task.id, Plan.from_dict(plan_v2_data()),
+                         reason_code="missing_data", reason="source file is unreadable")
+
+    reloaded = manager.get_task(task.id)
+    assert reloaded.plan.version == 2
+    assert [step.step_id for step in reloaded.plan.steps] == ["report_v2", "read"]
+    assert asdict(reloaded.plan.steps[1]) == asdict(Plan.from_dict(plan_data()).steps[1])
+    assert reloaded.steps[0].plan_step_id == "read"
+    assert reloaded.steps[0].tool_call_id == "call_1"
+    replanned = reloaded.plan_events[-1]
+    assert replanned["kind"] == "plan_replanned"
+    assert (replanned["from_version"], replanned["to_version"]) == (1, 2)
+    assert replanned["reason_code"] == "missing_data"
+    assert replanned["reason"] == "source file is unreadable"
+    assert replanned["preserved_step_ids"] == ["read"]
+    assert replanned["step_ids"] == ["report_v2", "read"]
+
+
+@pytest.mark.parametrize("case", [
+    "wrong_version", "skipped_version", "rewritten_completed_step",
+    "dropped_completed_step", "wrong_goal", "not_running", "no_initial_plan",
+])
+def test_replan_invariants_are_rejected(case):
+    manager = TaskManager()
+    task = manager.create_task("summarize sales")
+    if case == "no_initial_plan":
+        manager.start_task(task.id)
+        manager.add_step(task.id, "read_file", tool="read_file", plan_step_id="read",
+                         tool_call_id="call_1")
+        manager.add_plan_events(task.id, [{
+            "kind": "plan_step_completed", "step_id": "read", "version": 1, "evidence": "e",
+        }])
+    elif case == "not_running":
+        pass
+    else:
+        _running_task_with_plan(manager, task.id)
+
+    data = plan_v2_data()
+    if case == "wrong_version":
+        data["version"] = 1
+    elif case == "skipped_version":
+        data["version"] = 3
+    elif case == "rewritten_completed_step":
+        data["steps"][1]["completion_criteria"] = ["something else"]
+    elif case == "dropped_completed_step":
+        data["steps"] = [data["steps"][0]]
+    elif case == "wrong_goal":
+        data["user_input"] = "another task"
+
+    with pytest.raises((TaskStateError, ValueError)):
+        manager.replace_plan(task.id, Plan.from_dict(data),
+                             reason_code="missing_data", reason="why not")
+
+    reloaded = manager.get_task(task.id)
+    assert reloaded.plan is None or reloaded.plan.version == 1
+    assert all(event["kind"] != "plan_replanned" for event in reloaded.plan_events)
+
+
+def test_plan_events_and_bindings_survive_a_restart(tmp_path):
+    manager = TaskManager(FileTaskStore(tmp_path))
+    task = manager.create_task("summarize sales")
+    _running_task_with_plan(manager, task.id)
+    manager.replace_plan(task.id, Plan.from_dict(plan_v2_data()),
+                         reason_code="missing_data", reason="source file is unreadable")
+
+    restarted = TaskManager(FileTaskStore(tmp_path)).get_task(task.id)
+
+    assert [event["kind"] for event in restarted.plan_events] == [
+        "plan_created", "plan_step_completed", "plan_replanned",
+    ]
+    assert restarted.plan.version == 2
+    assert restarted.steps[0].plan_step_id == "read"
+    assert restarted.steps[0].tool_call_id == "call_1"
+    assert restarted.to_dict()["steps"][0]["plan_step_id"] == "read"
+
+
+def test_legacy_task_json_without_plan_events_or_bindings_is_readable(tmp_path):
+    legacy_id = "0123456789abcdef0123456789abcdef"
+    legacy_step = {
+        "id": "step-1", "name": "read_file", "tool": "read_file", "status": "SUCCESS",
+        "output": "text", "error": None, "started_at": None, "finished_at": None,
+        "duration_ms": None, "attempts": 1,
+    }
+    payload = {
+        "id": legacy_id, "user_input": "old task", "status": "SUCCESS", "steps": [legacy_step],
+        "plan": None, "result": None, "error": None, "input_files": [], "artifacts": [],
+        "workspace_dir": None, "require_artifact": False, "metrics": {},
+        "created_time": "2026-09-01T00:00:00+00:00", "updated_time": "2026-09-01T00:00:00+00:00",
+    }
+    (tmp_path / f"{legacy_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = TaskManager(FileTaskStore(tmp_path)).get_task(legacy_id)
+
+    assert loaded.plan_events == []
+    assert loaded.steps[0].plan_step_id is None
+    assert loaded.steps[0].tool_call_id is None
+    assert loaded.to_dict()["plan_events"] == []
+
+
+def test_execution_binding_is_persisted_and_visible_through_the_api(tmp_path):
+    """End-to-end without a real LLM: plan -> bound call -> judged completion -> events."""
+    from agent.executor import Executor
+    from tools.base_tool import BaseTool, ToolResult
+    from tools.tool_registry import ToolRegistry
+
+    class EchoTool(BaseTool):
+        name = "echo"
+        description = "echo text"
+
+        def parameters_schema(self):
+            return {
+                "type": "object", "additionalProperties": False,
+                "properties": {"text": {"type": "string"}}, "required": ["text"],
+            }
+
+        def execute(self, text):
+            return ToolResult(success=True, output=text)
+
+    def _call(name, arguments, call_id):
+        return SimpleNamespace(
+            id=call_id, type="function",
+            function=SimpleNamespace(name=name, arguments=arguments),
+        )
+
+    class FullFlowLLM:
+        """One planner turn, then a bound tool call, a completion and a final answer."""
+
+        def __init__(self):
+            self.turns = 0
+
+        def chat(self, messages, tools=None, tool_choice=None, on_event=None):
+            if tool_choice and tool_choice["function"]["name"] == "create_plan":
+                message = SimpleNamespace(content=None, tool_calls=[_call("create_plan", json.dumps({
+                    "steps": [{
+                        "step_id": "read", "name": "read", "description": "read the source",
+                        "tool": "echo", "depends_on": [],
+                        "completion_criteria": ["The columns are identified"],
+                    }],
+                }), "plan_1")])
+            else:
+                # Only the execution loop advances the turn counter.
+                turn, self.turns = self.turns, self.turns + 1
+                if turn == 0:
+                    message = SimpleNamespace(content=None, tool_calls=[
+                        _call("echo", '{"text": "A,B", "plan_step_id": "read"}', "call_1")
+                    ])
+                elif turn == 1:
+                    message = SimpleNamespace(content=None, tool_calls=[
+                        _call("complete_plan_step",
+                              '{"step_id": "read", "evidence": "columns A and B identified"}',
+                              "call_2")
+                    ])
+                else:
+                    message = SimpleNamespace(content="done", tool_calls=[])
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    registry = ToolRegistry()
+    registry.register(EchoTool())
+    manager = TaskManager(FileTaskStore(tmp_path))
+    llm = FullFlowLLM()
+    planner = Planner(llm)
+    executor = Executor(llm, registry, manager, max_iterations=4, planner=planner)
+    task = AgentOrchestrator(manager, planner, executor).run("summarize the workbook")
+
+    assert task.status.value == "SUCCESS"
+    restarted = TaskManager(FileTaskStore(tmp_path))
+    with TestClient(create_app(
+        SimpleNamespace(task_manager=restarted, run_task=lambda _: None),
+        Settings(_env_file=None),
+    )) as client:
+        payload = client.get(f"/tasks/{task.id}").json()
+
+    assert payload["plan"]["version"] == 1
+    assert payload["steps"][0]["plan_step_id"] == "read"
+    assert payload["steps"][0]["tool_call_id"] == "call_1"
+    assert [event["kind"] for event in payload["plan_events"]] == [
+        "plan_created", "plan_step_bound", "plan_step_completed", "plan_finished",
+    ]
+    assert payload["plan_events"][-1]["satisfied"] is True

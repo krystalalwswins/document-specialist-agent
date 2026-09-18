@@ -41,7 +41,7 @@ def build_orchestrator(settings: Settings | None = None) -> AgentOrchestrator:
     task_manager = TaskManager(FileTaskStore(settings.task_store_dir))
     llm = LLMClient(settings)
     planner = Planner(llm)
-    executor = Executor(llm, registry, task_manager)
+    executor = Executor(llm, registry, task_manager, planner=planner)
     return AgentOrchestrator(
         task_manager,
         planner,

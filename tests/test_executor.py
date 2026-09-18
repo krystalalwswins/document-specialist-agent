@@ -65,6 +65,14 @@ def _make_executor(llm, registry):
     return task_manager, Executor(llm, registry, task_manager, max_iterations=4)
 
 
+def _plan(user_input="x", *, step_id="step_1", tool=None):
+    """A minimal but valid plan (the executor refuses to run an invalid contract)."""
+    return Plan(user_input=user_input, steps=[PlanStep(
+        name=step_id, description=f"do {step_id}", tool=tool, step_id=step_id,
+        depends_on=[], completion_criteria=[f"{step_id} is done"],
+    )])
+
+
 def test_executor_runs_tool_then_returns_final_answer():
     registry = ToolRegistry()
     registry.register(EchoTool())
@@ -77,7 +85,7 @@ def test_executor_runs_tool_then_returns_final_answer():
     task_manager, executor = _make_executor(llm, registry)
     task = task_manager.create_task("x")
     task_manager.start_task(task.id)
-    plan = Plan(user_input="x", steps=[PlanStep(name="echo")])
+    plan = _plan(tool="echo")
 
     answer = executor.run(task.id, "x", plan)
 
@@ -101,7 +109,7 @@ def test_executor_records_failed_step_and_continues():
     task_manager, executor = _make_executor(llm, registry)
     task = task_manager.create_task("x")
     task_manager.start_task(task.id)
-    plan = Plan(user_input="x", steps=[PlanStep(name="boom")])
+    plan = _plan(tool="boom")
 
     answer = executor.run(task.id, "x", plan)
 
@@ -118,7 +126,7 @@ def test_executor_raises_when_max_iterations_exceeded():
     task_manager, executor = _make_executor(llm, registry)
     task = task_manager.create_task("x")
     task_manager.start_task(task.id)
-    plan = Plan(user_input="x", steps=[PlanStep(name="echo")])
+    plan = _plan(tool="echo")
 
     with pytest.raises(MaxIterationsError):
         executor.run(task.id, "x", plan)
@@ -155,7 +163,7 @@ def test_tool_metadata_is_recorded_as_a_task_artifact():
     task = task_manager.create_task("x")
     task_manager.start_task(task.id)
 
-    executor.run(task.id, "x", Plan(user_input="x"))
+    executor.run(task.id, "x", _plan())
 
     assert task_manager.get_task(task.id).artifacts == [
         {"oss_key": "reports/out.csv", "bytes": 12}
@@ -186,7 +194,7 @@ def test_non_artifact_metadata_is_not_recorded_as_a_deliverable():
     task = task_manager.create_task("x")
     task_manager.start_task(task.id)
 
-    executor.run(task.id, "x", Plan(user_input="x"))
+    executor.run(task.id, "x", _plan())
 
     assert task_manager.get_task(task.id).artifacts == []
 
@@ -211,7 +219,7 @@ def test_staged_input_paths_are_given_to_the_model():
     task = task_manager.get_task(task.id)
     task_manager.start_task(task.id)
 
-    executor.run(task.id, "summarise the workbook", Plan(user_input="x"))
+    executor.run(task.id, "summarise the workbook", _plan())
 
     prompt = llm.calls[0]["messages"][1]["content"]
     assert f"This task owns the sandbox directory: /home/gem/workspace/tasks/{task.id}" in prompt
@@ -227,7 +235,7 @@ def test_no_input_section_when_nothing_was_staged():
     task = task_manager.create_task("plain task")
     task_manager.start_task(task.id)
 
-    executor.run(task.id, "plain task", Plan(user_input="x"))
+    executor.run(task.id, "plain task", _plan())
 
     assert "owns the sandbox directory" not in llm.calls[0]["messages"][1]["content"]
 
@@ -257,6 +265,6 @@ def test_executor_binds_tool_calls_to_the_task_directory():
         to_openai_tools=registry.to_openai_tools, execute=spy
     )
 
-    executor.run(task.id, "x", Plan(user_input="x"))
+    executor.run(task.id, "x", _plan())
 
     assert calls == {"name": "echo", "task_id": task.id}

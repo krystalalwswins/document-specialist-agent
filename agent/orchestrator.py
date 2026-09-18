@@ -93,7 +93,11 @@ class AgentOrchestrator:
         repairs = 0
         repair_hint: str | None = None
         while True:
-            already = len(self._task_manager.get_task(task_id).artifacts)
+            current = self._task_manager.get_task(task_id)
+            # A replan inside the previous attempt must not be overwritten by the
+            # plan snapshot this method was called with.
+            plan = current.plan or plan
+            already = len(current.artifacts)
             answer = self._executor.run(task_id, user_input, plan, repair_hint=repair_hint)
             current = self._task_manager.get_task(task_id)
             artifacts = current.artifacts[already:]

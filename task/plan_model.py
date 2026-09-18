@@ -115,3 +115,33 @@ class Plan:
             + f"\n   Complete when: {'; '.join(step.completion_criteria)}"
             for index, step in enumerate(self.steps, start=1)
         ) or "(no steps)"
+
+    def step_ids(self) -> list[str]:
+        return [step.step_id for step in self.steps]
+
+    def step_by_id(self, step_id: str) -> PlanStep:
+        for step in self.steps:
+            if step.step_id == step_id:
+                return step
+        raise PlanValidationError(f"unknown plan step: {step_id}")
+
+
+def assert_replan_preserves_completed_steps(
+    old_plan: Plan, new_plan: Plan, completed_step_ids: list[str]
+) -> None:
+    """A new plan version may only replace steps that are not finished yet.
+
+    Replanning must never rewrite or drop finished work, so the runtime re-checks
+    (instead of trusting the model) that every completed step survives verbatim.
+    """
+    previous = {step.step_id: step for step in old_plan.steps}
+    current = {step.step_id: step for step in new_plan.steps}
+    for step_id in completed_step_ids:
+        if step_id not in previous or step_id not in current:
+            raise PlanValidationError(
+                f"completed step {step_id!r} must stay in the replanned plan"
+            )
+        if asdict(previous[step_id]) != asdict(current[step_id]):
+            raise PlanValidationError(
+                f"completed step {step_id!r} was rewritten; only unfinished steps may change"
+            )

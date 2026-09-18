@@ -1,19 +1,89 @@
-"""Executor: the multi-round tool-calling loop (the Agent core, not a script)."""
+"""Executor: the multi-round tool-calling loop (the Agent core, not a script).
+
+P0-2 adds the plan runtime around the existing loop: every tool call is attributed
+to a plan step, a step only runs after its dependencies are complete, completion is
+judged from explicit evidence instead of "the tool returned success", and the model
+can ask for a budgeted, versioned local replan.
+"""
 
 from __future__ import annotations
 
+import copy
 import json
 import time
 from datetime import datetime, timezone
 from typing import Any
 
 from agent.llm_client import LLMClient
-from agent.planner import Plan
+from agent.planner import Plan, Planner, PlannerError
 from retry.retry_policy import RetryDecision, RetryPolicy, classify_exception
+from task.plan_model import PlanValidationError
+from task.plan_state import PlanRunState
 from task.task_manager import TaskManager
+from task.task_model import TaskStateError
 from tools.base_tool import ErrorType, ToolResult
 from tools.tool_registry import ToolRegistry
 
+# Reserved argument added to every registered tool schema and stripped again before
+# the tool schema is validated, so the model always says which planned step it works on.
+PLAN_STEP_ARGUMENT = "plan_step_id"
+
+# Runtime control calls handled inside the loop. They are not registered tools:
+# they grant no capability, so the registry, permissions and audit stay untouched.
+COMPLETE_PLAN_STEP = "complete_plan_step"
+REQUEST_REPLAN = "request_replan"
+REPLAN_REASON_CODES = ("tool_failure", "missing_data", "criteria_unmet", "dependency_invalid")
+
+COMPLETE_PLAN_STEP_TOOL = {
+    "type": "function",
+    "function": {
+        "name": COMPLETE_PLAN_STEP,
+        "description": (
+            "Record that a planned step is finished. Provide the evidence that satisfies "
+            "that step's completion_criteria. A tool call returning success does not "
+            "complete a step by itself, and a completed step cannot be completed again."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "step_id": {"type": "string", "minLength": 1},
+                "evidence": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "observable result that satisfies the completion criteria",
+                },
+            },
+            "required": ["step_id", "evidence"],
+        },
+    },
+}
+
+REQUEST_REPLAN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": REQUEST_REPLAN,
+        "description": (
+            "Ask the runtime to replace the unfinished part of the plan. Only allowed when "
+            "a tool failed unrecoverably, required data is missing, completion criteria "
+            "cannot be met, or the plan's dependencies no longer hold. Completed steps are "
+            "kept unchanged and can never be replanned or replayed."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "reason_code": {"type": "string", "enum": list(REPLAN_REASON_CODES)},
+                "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "the observation that makes the current plan inadequate",
+                },
+            },
+            "required": ["reason_code", "reason"],
+        },
+    },
+}
 
 class MaxIterationsError(Exception):
     """Raised when the tool-calling loop exceeds max_iterations."""
@@ -21,6 +91,10 @@ class MaxIterationsError(Exception):
 
 class UnsafeExecutionStateError(Exception):
     """Do not let the model replay code after timeout or uncertain cleanup."""
+
+
+class ReplanBudgetExceededError(Exception):
+    """Raised when a task asks for more local replans than its budget allows."""
 
 
 class Executor:
@@ -31,12 +105,17 @@ class Executor:
         task_manager: TaskManager,
         max_iterations: int = 8,
         retry_policy: RetryPolicy | None = None,
+        planner: Planner | None = None,
+        max_replans: int = 2,
     ) -> None:
         self._llm = llm
         self._registry = registry
         self._task_manager = task_manager
         self._max_iterations = max_iterations
         self._retry_policy = retry_policy or RetryPolicy()
+        # None means "no local replanning configured": a request becomes an observation.
+        self._planner = planner
+        self._max_replans = max_replans
 
     def run(
         self,
@@ -51,15 +130,10 @@ class Executor:
         the model why the previous attempt was rejected so it can fix the
         deliverable instead of repeating the same output.
         """
+        state = self._plan_state(task_id, plan)
         messages: list[dict[str, Any]] = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a task-execution agent. Execute the plan step by step "
-                    "using the available tools, then produce a final answer."
-                ),
-            },
-            {"role": "user", "content": f"Task: {user_input}\n\nPlan:\n{plan.summary()}{self._input_context(task_id)}"},
+            {"role": "system", "content": self._system_prompt(state)},
+            {"role": "user", "content": f"Task: {user_input}\n\nPlan:\n{state.plan.summary()}{self._input_context(task_id)}"},
         ]
         if repair_hint:
             messages.append(
@@ -72,10 +146,14 @@ class Executor:
                 }
             )
 
+        replans_used = 0
         for iteration in range(1, self._max_iterations + 1):
+            # Re-render instead of appending: the model always sees live progress,
+            # and the message history does not grow with a status line per round.
+            messages[0] = {"role": "system", "content": self._system_prompt(state)}
             response = self._llm.chat(
                 messages,
-                tools=self._registry.to_openai_tools(),
+                tools=self._tool_schemas(),
                 on_event=self._task_manager.metric_sink(
                     task_id, "llm_events", phase="execute", iteration=iteration
                 ),
@@ -84,45 +162,375 @@ class Executor:
             messages.append(self._assistant_message(message))
 
             if not message.tool_calls:
+                self._record_plan_event(task_id, {
+                    "kind": "plan_finished",
+                    "version": state.version,
+                    "satisfied": state.all_complete(),
+                    "remaining_step_ids": state.unfinished_ids(),
+                })
                 return message.content or ""
 
             for call in message.tool_calls:
-                step = self._task_manager.add_step(task_id, call.function.name, tool=call.function.name)
-                self._task_manager.start_step(task_id, step.id)
-                try:
-                    arguments = json.loads(call.function.arguments or "{}")
-                except (ValueError, TypeError):
-                    arguments = None  # Registry produces INVALID_ARGUMENT without invoking a tool.
-
-                result, _, attempts = self._invoke_tool(
-                    task_id, call.function.name, arguments, step_id=step.id, tool_call_id=call.id,
-                )
-                self._task_manager.set_step_attempts(task_id, step.id, attempts)
-
-                if result.success:
-                    self._task_manager.succeed_step(task_id, step.id, output=result.output)
-                    # Only deliverables are artifacts; other tools also attach
-                    # metadata (parse_document reports chars/markdown_path).
-                    if result.metadata.get("kind") == "artifact":
-                        artifact = {
-                            key: value
-                            for key, value in result.metadata.items()
-                            if key != "kind"
-                        }
-                        self._task_manager.add_artifact(task_id, artifact)
-                else:
-                    self._task_manager.fail_step(
-                        task_id, step.id, error=result.error or "unknown error"
+                name = call.function.name
+                if name == COMPLETE_PLAN_STEP:
+                    state = self._complete_plan_step(task_id, state, call, messages)
+                elif name == REQUEST_REPLAN:
+                    state, replans_used = self._replan(
+                        task_id, user_input, state, call, messages, replans_used
                     )
-                if result.terminal:
-                    raise UnsafeExecutionStateError(result.error or "unsafe sandbox execution state")
-                content = result.to_text()
-
-                messages.append(
-                    {"role": "tool", "tool_call_id": call.id, "content": content}
-                )
+                else:
+                    state = self._run_tool_call(task_id, state, call, messages)
 
         raise MaxIterationsError(f"exceeded {self._max_iterations} tool-calling iterations")
+
+    # --- plan runtime ---------------------------------------------------------
+
+    def _plan_state(self, task_id: str, plan: Plan) -> PlanRunState:
+        """Derive step status from the task's own record, not from a caller's copy."""
+        task = self._task_manager.get_task(task_id)
+        return PlanRunState(task.plan or plan, task.plan_events)
+
+    def _tool_schemas(self) -> list[dict[str, Any]]:
+        schemas = [copy.deepcopy(schema) for schema in self._registry.to_openai_tools()]
+        for schema in schemas:
+            parameters = schema["function"].setdefault(
+                "parameters", {"type": "object", "properties": {}}
+            )
+            parameters.setdefault("properties", {})[PLAN_STEP_ARGUMENT] = {
+                "type": "string",
+                "minLength": 1,
+                "description": "step_id of the plan step this call belongs to",
+            }
+            required = parameters.setdefault("required", [])
+            if PLAN_STEP_ARGUMENT not in required:
+                required.append(PLAN_STEP_ARGUMENT)
+        schemas.append(copy.deepcopy(COMPLETE_PLAN_STEP_TOOL))
+        schemas.append(copy.deepcopy(REQUEST_REPLAN_TOOL))
+        return schemas
+
+    def _system_prompt(self, state: PlanRunState) -> str:
+        blocked = {
+            step_id: state.unsatisfied_dependencies(step_id)
+            for step_id in state.unfinished_ids()
+            if state.unsatisfied_dependencies(step_id)
+        }
+        return "\n".join([
+            "You are a task-execution agent. Execute the plan step by step using the "
+            "available tools, then produce a final answer.",
+            "",
+            "Plan rules:",
+            f"- Every tool call must pass {PLAN_STEP_ARGUMENT}: the plan step it works on.",
+            "  A step may only run once its dependencies are complete, and a completed "
+            "step cannot be replayed (bind new work to an unfinished step instead).",
+            f"- A successful tool call does not finish a step. Once a step's work is really "
+            f"done, call {COMPLETE_PLAN_STEP} with the evidence that satisfies its "
+            "completion_criteria.",
+            f"- Call {REQUEST_REPLAN} only when a tool failed unrecoverably, required data "
+            "is missing, completion criteria cannot be met, or the plan's dependencies no "
+            "longer hold. Completed steps are kept unchanged.",
+            "",
+            f"Plan v{state.version} progress:",
+            f"- completed: {', '.join(state.completed_ids()) or '(none)'}",
+            f"- running: {', '.join(state.running_ids()) or '(none)'}",
+            f"- ready (dependencies complete, not finished): {', '.join(state.ready_ids()) or '(none)'}",
+            "- blocked: " + (", ".join(
+                f"{step_id} (waiting for {', '.join(deps)})" for step_id, deps in blocked.items()
+            ) or "(none)"),
+        ])
+
+    def _run_tool_call(
+        self, task_id: str, state: PlanRunState, call: Any, messages: list[dict[str, Any]]
+    ) -> PlanRunState:
+        """Execute one tool call, but only for a step the plan currently allows."""
+        name = call.function.name
+        arguments = self._parse_arguments(call)
+        declared: Any = None
+        if isinstance(arguments, dict) and PLAN_STEP_ARGUMENT in arguments:
+            declared = arguments.pop(PLAN_STEP_ARGUMENT)
+
+        step_id, violation, implicit = self._bind_step(state, declared)
+        if violation:
+            self._record_plan_event(task_id, {
+                "kind": "plan_binding_rejected",
+                "step_id": declared if isinstance(declared, str) else None,
+                "tool": name,
+                "tool_call_id": call.id,
+                "version": state.version,
+                "violation": violation,
+            })
+            self._observe(messages, call.id, f"[plan binding rejected] {violation}")
+            return state
+
+        step = self._task_manager.add_step(
+            task_id, name, tool=name, plan_step_id=step_id, tool_call_id=call.id
+        )
+        self._task_manager.start_step(task_id, step.id)
+        if step_id is None:
+            self._record_plan_event(task_id, {
+                "kind": "plan_unbound_tool_call",
+                "tool": name,
+                "tool_call_id": call.id,
+                "task_step_id": step.id,
+                "version": state.version,
+                "candidates": state.candidates_for_implicit_binding(),
+            })
+        else:
+            self._record_plan_event(task_id, {
+                "kind": "plan_step_bound",
+                "step_id": step_id,
+                "tool": name,
+                "tool_call_id": call.id,
+                "task_step_id": step.id,
+                "version": state.version,
+                "implicit": implicit,
+            })
+
+        result, _, attempts = self._invoke_tool(
+            task_id, name, arguments, step_id=step.id, tool_call_id=call.id,
+        )
+        self._task_manager.set_step_attempts(task_id, step.id, attempts)
+
+        if result.success:
+            self._task_manager.succeed_step(task_id, step.id, output=result.output)
+            # Only deliverables are artifacts; other tools also attach
+            # metadata (parse_document reports chars/markdown_path).
+            if result.metadata.get("kind") == "artifact":
+                artifact = {
+                    key: value
+                    for key, value in result.metadata.items()
+                    if key != "kind"
+                }
+                self._task_manager.add_artifact(task_id, artifact)
+        else:
+            self._task_manager.fail_step(
+                task_id, step.id, error=result.error or "unknown error"
+            )
+            if step_id is not None:
+                # Observation only: a tool error never triggers a replan by itself.
+                self._record_plan_event(task_id, {
+                    "kind": "plan_step_failed",
+                    "step_id": step_id,
+                    "version": state.version,
+                    "tool": name,
+                    "tool_call_id": call.id,
+                    "task_step_id": step.id,
+                    "error": result.error or "unknown error",
+                    "error_type": result.error_type.value if result.error_type else None,
+                })
+        if result.terminal:
+            raise UnsafeExecutionStateError(result.error or "unsafe sandbox execution state")
+
+        self._observe(messages, call.id, result.to_text())
+        return self._plan_state(task_id, state.plan)
+
+    @staticmethod
+    def _bind_step(state: PlanRunState, declared: Any) -> tuple[str | None, str | None, bool]:
+        """Resolve which planned step a tool call belongs to, plus any violation."""
+        if not state.step_ids():
+            # No plan to attribute to (only reachable with a bypassed planner):
+            # keep the call working and record it as unbound.
+            return None, None, False
+        if declared is not None:
+            if not isinstance(declared, str) or not declared.strip():
+                return None, f"{PLAN_STEP_ARGUMENT} must be a non-empty string", False
+            if declared not in state.step_ids():
+                return None, f"unknown plan step '{declared}' (plan v{state.version})", False
+            if state.is_complete(declared):
+                return None, (
+                    f"plan step '{declared}' is already complete and cannot be replayed; "
+                    "bind this call to an unfinished step or request a replan"
+                ), False
+            waiting = state.unsatisfied_dependencies(declared)
+            if waiting:
+                return None, (
+                    f"plan step '{declared}' is waiting for {', '.join(waiting)}; "
+                    "finish the prerequisites first"
+                ), False
+            return declared, None, False
+        candidates = state.candidates_for_implicit_binding()
+        if len(candidates) == 1:
+            return candidates[0], None, True
+        return None, None, False
+
+    def _complete_plan_step(
+        self, task_id: str, state: PlanRunState, call: Any, messages: list[dict[str, Any]]
+    ) -> PlanRunState:
+        arguments = self._parse_arguments(call)
+        step_id = arguments.get("step_id") if isinstance(arguments, dict) else None
+        evidence = arguments.get("evidence") if isinstance(arguments, dict) else None
+        violation = self._completion_violation(state, step_id, evidence)
+        if violation:
+            self._record_plan_event(task_id, {
+                "kind": "plan_completion_rejected",
+                "step_id": step_id if isinstance(step_id, str) else None,
+                "tool_call_id": call.id,
+                "version": state.version,
+                "violation": violation,
+            })
+            self._observe(messages, call.id, f"[plan step rejected] {violation}")
+            return state
+
+        step = state.plan.step_by_id(step_id)
+        self._record_plan_event(task_id, {
+            "kind": "plan_step_completed",
+            "step_id": step_id,
+            "version": state.version,
+            "evidence": evidence,
+            "completion_criteria": list(step.completion_criteria),
+            "tool_call_id": call.id,
+        })
+        refreshed = self._plan_state(task_id, state.plan)
+        self._observe(
+            messages, call.id,
+            f"[plan] step '{step_id}' recorded as complete (plan v{state.version}). "
+            f"remaining: {', '.join(refreshed.unfinished_ids()) or '(none)'}",
+        )
+        return refreshed
+
+    @staticmethod
+    def _completion_violation(state: PlanRunState, step_id: Any, evidence: Any) -> str | None:
+        if not isinstance(step_id, str) or not step_id.strip():
+            return "step_id must be a non-empty string"
+        if step_id not in state.step_ids():
+            return f"unknown plan step '{step_id}' (plan v{state.version})"
+        if state.is_complete(step_id):
+            return f"plan step '{step_id}' is already complete and cannot be completed again"
+        if not isinstance(evidence, str) or not evidence.strip():
+            return (
+                "evidence must be a non-empty string describing the observable result that "
+                "satisfies the step's completion_criteria"
+            )
+        waiting = state.unsatisfied_dependencies(step_id)
+        if waiting:
+            return f"plan step '{step_id}' is waiting for {', '.join(waiting)}"
+        return None
+
+    def _replan(
+        self,
+        task_id: str,
+        user_input: str,
+        state: PlanRunState,
+        call: Any,
+        messages: list[dict[str, Any]],
+        replans_used: int,
+    ) -> tuple[PlanRunState, int]:
+        arguments = self._parse_arguments(call)
+        reason_code = arguments.get("reason_code") if isinstance(arguments, dict) else None
+        reason = arguments.get("reason") if isinstance(arguments, dict) else None
+
+        violation = self._replan_violation(state, reason_code, reason)
+        if violation:
+            self._record_plan_event(task_id, {
+                "kind": "plan_replan_rejected",
+                "tool_call_id": call.id,
+                "version": state.version,
+                "reason_code": reason_code if isinstance(reason_code, str) else None,
+                "violation": violation,
+            })
+            self._observe(messages, call.id, f"[replan rejected] {violation}")
+            return state, replans_used
+        if replans_used >= self._max_replans:
+            self._record_plan_event(task_id, {
+                "kind": "plan_replan_exhausted",
+                "tool_call_id": call.id,
+                "version": state.version,
+                "reason_code": reason_code,
+                "reason": reason,
+                "used": replans_used,
+                "max_replans": self._max_replans,
+            })
+            raise ReplanBudgetExceededError(
+                f"replan budget exhausted: {replans_used} of {self._max_replans} local "
+                f"replans used, last request was {reason_code} ({reason})"
+            )
+
+        self._record_plan_event(task_id, {
+            "kind": "plan_replan_requested",
+            "tool_call_id": call.id,
+            "version": state.version,
+            "reason_code": reason_code,
+            "reason": reason,
+            "remaining_step_ids": state.unfinished_ids(),
+        })
+        try:
+            new_plan = self._planner.replan(
+                user_input,
+                state.plan,
+                completed_steps=self._completed_step_records(state),
+                observations=state.failure_observations(),
+                available_tools=[
+                    schema["function"]["name"] for schema in self._registry.to_openai_tools()
+                ],
+            )
+            self._task_manager.replace_plan(
+                task_id, new_plan, reason_code=reason_code, reason=reason
+            )
+        except (PlannerError, PlanValidationError, TaskStateError, ValueError) as exc:
+            self._record_plan_event(task_id, {
+                "kind": "plan_replan_rejected",
+                "tool_call_id": call.id,
+                "version": state.version,
+                "reason_code": reason_code,
+                "violation": str(exc),
+            })
+            self._observe(messages, call.id, f"[replan rejected] the new plan was not applied: {exc}")
+            return state, replans_used
+
+        refreshed = self._plan_state(task_id, state.plan)
+        self._observe(
+            messages, call.id,
+            f"[replan applied] plan v{refreshed.version}: "
+            f"{', '.join(refreshed.unfinished_ids()) or '(nothing left)'} left to do. "
+            f"Steps {', '.join(refreshed.completed_ids()) or '(none)'} stay complete.",
+        )
+        return refreshed, replans_used + 1
+
+    def _replan_violation(
+        self, state: PlanRunState, reason_code: Any, reason: Any
+    ) -> str | None:
+        if not isinstance(reason_code, str) or reason_code not in REPLAN_REASON_CODES:
+            return f"reason_code must be one of: {', '.join(REPLAN_REASON_CODES)}"
+        if not isinstance(reason, str) or not reason.strip():
+            return "reason must be a non-empty string describing the observation"
+        if not state.unfinished_ids():
+            return "every plan step is already complete, so there is nothing left to replan"
+        if self._planner is None:
+            return "replanning is not configured for this executor"
+        return None
+
+    @staticmethod
+    def _completed_step_records(state: PlanRunState) -> list[dict[str, Any]]:
+        records = []
+        for step_id in state.completed_ids():
+            step = state.plan.step_by_id(step_id)
+            records.append({
+                "step_id": step.step_id,
+                "name": step.name,
+                "description": step.description,
+                "tool": step.tool,
+                "depends_on": list(step.depends_on),
+                "completion_criteria": list(step.completion_criteria),
+                "evidence": state.evidence(step_id),
+            })
+        return records
+
+    def _record_plan_event(self, task_id: str, event: dict[str, Any]) -> None:
+        self._task_manager.add_plan_events(task_id, [{
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            **event,
+        }])
+
+    @staticmethod
+    def _parse_arguments(call: Any) -> Any:
+        try:
+            arguments = json.loads(call.function.arguments or "{}")
+        except (ValueError, TypeError):
+            return None  # Registry produces INVALID_ARGUMENT without invoking a tool.
+        return arguments if isinstance(arguments, dict) else arguments
+
+    @staticmethod
+    def _observe(messages: list[dict[str, Any]], call_id: str, content: str) -> None:
+        messages.append({"role": "tool", "tool_call_id": call_id, "content": content})
 
     def _input_context(self, task_id: str) -> str:
         """Tell the model which sandbox directory and input files belong to this task."""

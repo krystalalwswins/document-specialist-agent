@@ -4,7 +4,7 @@
 > 审计分支：`main`  
 > 审计基线：`1a2b7df12258f33e6912cb48f7118d051e38ee2b`  
 > 第 2–5 节保留上述基线的审计快照；后续实现进度以各任务下的执行记录为准。
-> 2026-09-18：P0-1 已完成，P0-2 及后续编号尚未开始。
+> 2026-09-18：P0-1、P0-2 已完成，P0-3 及后续编号尚未开始。
 
 ## 1. 最终定位
 
@@ -230,6 +230,48 @@ Planner 校验模型响应，Orchestrator 在 Executor 之前调用 `TaskManager
 - 旧任务记录有兼容读取策略或明确迁移方案。
 
 ### P0-2：绑定执行步骤并实现局部重规划
+
+**状态：已完成（2026-09-18，基于 `7d97c34f5febda1b9a42fef2e127349f353f2160`）**
+
+最小修改方案：沿用既有 ReAct 循环、工具注册表和计划落盘，只补一层计划运行时。
+新增纯计算的 `task/plan_state.py`（由 append-only 事件派生步骤状态与可调度集合）；
+`TaskStep` 增加 `plan_step_id`/`tool_call_id`，`Task` 增加 `plan_events` 与
+`apply_replan`；Executor 给工具 schema 注入必填 `plan_step_id`（调用前剥离），
+在循环内拦截两个运行时控制调用 `complete_plan_step` 与 `request_replan`，
+并给 Planner 增加 `replan`。不重写循环，不新增工具、权限或存储后端。
+
+实际修改：`task/plan_state.py`（新增）、`task/plan_model.py`、
+`task/task_model.py`、`task/task_manager.py`、`agent/executor.py`、
+`agent/planner.py`、`agent/orchestrator.py`、`agent/wiring.py`，以及对应测试、
+README 和验证文档。未改动 `tools/`、`security/`、`retry/`、`core/config.py`、`api/`。
+
+完成内容：
+
+- 每个 Tool Call 记录 `plan_step_id` 与 `tool_call_id`；绑定事件带版本与是否隐式绑定；
+- 只调度依赖已完成的计划步骤：违规绑定不执行工具、不产生 `TaskStep`，只回注观察；
+- 已完成步骤不可重放，`Task.apply_replan` 还要求它们在版本 +1 中逐字段不变；
+- 步骤完成由 `completion_criteria` 证据判定（`complete_plan_step`），
+  工具返回 success 不再等于业务步骤完成；
+- 局部重规划只在工具不可恢复失败、必要数据缺失、完成条件未满足、
+  原计划依赖失效四类原因码下由模型请求，输入包含目标、当前计划、
+  已完成步骤+证据、失败观察和可用工具；
+- 工具错误只作为观察回注，不会无条件触发重规划；
+- 新计划版本 +1，保留已完成步骤，只替换未完成部分；
+- `max_replans` 预算（Executor 构造参数，默认 2）耗尽后抛
+  `ReplanBudgetExceededError`，任务明确失败；
+- `plan_events` 记录创建、绑定、完成、失败、重规划请求/拒绝/应用/耗尽与收尾，
+  随任务 JSON 落盘，重启后经 `GET /tasks/{id}` 可查。
+
+验收证据：新用例先在旧代码上得到 2 个模块导入失败 + 14 项失败；实现后相关测试
+214 passed（1 skipped）；完整 `python -m pytest -q` **323 passed，1 skipped**
+（基线 275 passed / 1 skipped，Windows 11 / Python 3.13.2 / pytest 9.1.1）。
+本轮未调用真实 LLM、Docker 或 MinIO；`docs/verification/01_security.md` 作为历史快照未改动。
+
+调用链：`Executor.run → PlanRunState(plan, plan_events) → 工具 schema 注入
+plan_step_id → 绑定门禁 → ToolRegistry.execute → 观察回注 /
+complete_plan_step → plan_step_completed / request_replan → Planner.replan →
+TaskManager.replace_plan → FileTaskStore`。完整学习说明与验收记录见
+[`docs/verification/03_execution_binding.md`](docs/verification/03_execution_binding.md)。
 
 **目标**
 

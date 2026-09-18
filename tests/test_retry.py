@@ -107,8 +107,16 @@ def _run_tool(tool, max_attempts=3):
     executor = Executor(ScriptedLLM(tool.name), registry, task_manager, retry_policy=policy)
     task = task_manager.create_task("x")
     task_manager.start_task(task.id)
-    executor.run(task.id, "x", Plan(user_input="x", steps=[PlanStep(name=tool.name)]))
+    executor.run(task.id, "x", _plan_for(tool.name))
     return task_manager.get_task(task.id)
+
+
+def _plan_for(tool_name):
+    """A valid one-step contract; the executor refuses to run an invalid plan."""
+    return Plan(user_input="x", steps=[PlanStep(
+        step_id="call", name=tool_name, description=f"call {tool_name}", tool=tool_name,
+        depends_on=[], completion_criteria=[f"{tool_name} produced an observable result"],
+    )])
 
 
 def test_error_type_retryable():

@@ -142,10 +142,17 @@ class TaskManager:
             self._store.update(task)
         return task
 
-    def add_step(self, task_id: str, name: str, tool: Optional[str] = None) -> TaskStep:
+    def add_step(
+        self,
+        task_id: str,
+        name: str,
+        tool: Optional[str] = None,
+        plan_step_id: Optional[str] = None,
+        tool_call_id: Optional[str] = None,
+    ) -> TaskStep:
         with self._lock:
             task = self._store.get(task_id)
-            step = task.add_step(name, tool)
+            step = task.add_step(name, tool, plan_step_id, tool_call_id)
             self._store.update(task)
         return step
 
@@ -187,6 +194,24 @@ class TaskManager:
             task = self._store.get(task_id)
             task.metrics.setdefault(key, []).extend(events)
             self._store.update(task)
+
+    def add_plan_events(self, task_id: str, events: list[dict[str, Any]]) -> None:
+        """Append plan lifecycle events (binding, completion, failure, replan)."""
+        with self._lock:
+            task = self._store.get(task_id)
+            for event in events:
+                task.add_plan_event(event)
+            self._store.update(task)
+
+    def replace_plan(
+        self, task_id: str, plan: Plan, *, reason_code: str, reason: str
+    ) -> Task:
+        """Apply a locally replanned version; completed steps must survive verbatim."""
+        with self._lock:
+            task = self._store.get(task_id)
+            task.apply_replan(plan, reason_code=reason_code, reason=reason)
+            self._store.update(task)
+        return task
 
     def set_input_files(self, task_id: str, input_files: list[dict[str, Any]]) -> None:
         with self._lock:

@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
-from .plan_model import Plan
+from .plan_model import Plan, assert_replan_preserves_completed_steps
 
 
 def _new_id() -> str:
@@ -85,6 +85,10 @@ class TaskStep:
     finished_at: Optional[str] = None
     duration_ms: Optional[int] = None
     attempts: int = 1
+    # Which planned step this call was working on, and the provider-side call id.
+    # Both stay optional so records of an unbound call and pre-P0-2 JSON remain valid.
+    plan_step_id: Optional[str] = None
+    tool_call_id: Optional[str] = None
 
     _ALLOWED_TRANSITIONS = {
         StepStatus.PENDING: {StepStatus.RUNNING},
@@ -127,6 +131,8 @@ class TaskStep:
             "finished_at": self.finished_at,
             "duration_ms": self.duration_ms,
             "attempts": self.attempts,
+            "plan_step_id": self.plan_step_id,
+            "tool_call_id": self.tool_call_id,
         }
 
     @classmethod
@@ -142,6 +148,8 @@ class TaskStep:
             finished_at=data.get("finished_at"),
             duration_ms=data.get("duration_ms"),
             attempts=data.get("attempts", 1),
+            plan_step_id=data.get("plan_step_id"),
+            tool_call_id=data.get("tool_call_id"),
         )
 
 
@@ -169,6 +177,9 @@ class Task:
     updated_time: str = field(default_factory=_utc_now_iso)
     # None also represents legacy task records created before plan persistence.
     plan: Optional[Plan] = None
+    # Append-only audit of plan lifecycle: creation, step binding, completion,
+    # failure, replan requests/rejections and applied replans (with versions).
+    plan_events: list[dict[str, Any]] = field(default_factory=list)
 
     _ALLOWED_TRANSITIONS = {
         # CREATED -> FAILED covers a task that is abandoned/failed before it ever
@@ -200,21 +211,89 @@ class Task:
         self._transition(TaskStatus.FAILED)
         self.error = error
 
-    def add_step(self, name: str, tool: Optional[str] = None) -> TaskStep:
-        step = TaskStep(name=name, tool=tool)
+    def add_step(
+        self,
+        name: str,
+        tool: Optional[str] = None,
+        plan_step_id: Optional[str] = None,
+        tool_call_id: Optional[str] = None,
+    ) -> TaskStep:
+        step = TaskStep(
+            name=name, tool=tool, plan_step_id=plan_step_id, tool_call_id=tool_call_id
+        )
         self.steps.append(step)
         self._touch()
         return step
 
     def set_plan(self, plan: Plan) -> None:
-        """Attach the initial plan once; versioned replanning belongs to P0-2."""
+        """Attach the initial plan once; later versions go through apply_replan."""
         if self.status != TaskStatus.RUNNING or self.plan is not None:
             raise TaskStateError("initial plan requires a running task without a plan")
         plan.validate()
         if plan.user_input != self.user_input or plan.version != 1:
             raise TaskStateError("initial plan must match the task and have version 1")
         self.plan = Plan.from_dict(plan.to_dict())
+        self._record_plan_event(
+            "plan_created", version=plan.version, step_ids=plan.step_ids()
+        )
         self._touch()
+
+    def add_plan_event(self, event: dict[str, Any]) -> None:
+        """Append one already-built plan event (the Executor owns its schema)."""
+        if not isinstance(event, dict) or not isinstance(event.get("kind"), str):
+            raise TaskStateError("a plan event needs a kind")
+        self.plan_events.append(dict(event))
+        self._touch()
+
+    def completed_plan_steps(self) -> list[str]:
+        """Steps of the current plan that were explicitly judged complete."""
+        if self.plan is None:
+            return []
+        known = set(self.plan.step_ids())
+        return list(dict.fromkeys(
+            event["step_id"]
+            for event in self.plan_events
+            if event.get("kind") == "plan_step_completed"
+            and event.get("step_id") in known
+        ))
+
+    def apply_replan(self, plan: Plan, *, reason_code: str, reason: str) -> None:
+        """Replace the plan with the next version, keeping finished steps verbatim.
+
+        Only the unfinished part may change: completed steps must reappear with
+        identical content, so a replan can never replay or rewrite finished work.
+        """
+        if self.status != TaskStatus.RUNNING:
+            raise TaskStateError("replanning requires a running task")
+        if self.plan is None:
+            raise TaskStateError("replanning requires an initial plan")
+        for label, value in (("replan reason_code", reason_code), ("replan reason", reason)):
+            if not isinstance(value, str) or not value.strip():
+                raise TaskStateError(f"{label} must be a non-empty string")
+        plan.validate()
+        if plan.user_input != self.user_input:
+            raise TaskStateError("a replan must keep the task goal")
+        next_version = self.plan.version + 1
+        if plan.version != next_version:
+            raise TaskStateError(f"a replan must carry version {next_version}")
+        completed = self.completed_plan_steps()
+        assert_replan_preserves_completed_steps(self.plan, plan, completed)
+        self.plan = Plan.from_dict(plan.to_dict())
+        self._record_plan_event(
+            "plan_replanned",
+            from_version=next_version - 1,
+            to_version=plan.version,
+            reason_code=reason_code,
+            reason=reason,
+            preserved_step_ids=completed,
+            step_ids=plan.step_ids(),
+        )
+        self._touch()
+
+    def _record_plan_event(self, kind: str, **fields: Any) -> None:
+        self.plan_events.append(
+            {"occurred_at": _utc_now_iso(), "kind": kind, **fields}
+        )
 
     def get_step(self, step_id: str) -> TaskStep:
         for step in self.steps:
@@ -241,6 +320,7 @@ class Task:
             "status": self.status.value,
             "steps": [step.to_dict() for step in self.steps],
             "plan": self.plan.to_dict() if self.plan is not None else None,
+            "plan_events": [dict(event) for event in self.plan_events],
             "result": self.result,
             "error": self.error,
             "input_files": self.input_files,
@@ -260,6 +340,7 @@ class Task:
             status=TaskStatus(data["status"]),
             steps=[TaskStep.from_dict(step) for step in data.get("steps", [])],
             plan=Plan.from_dict(data["plan"]) if data.get("plan") is not None else None,
+            plan_events=[dict(event) for event in data.get("plan_events", [])],
             result=data.get("result"),
             error=data.get("error"),
             input_files=data.get("input_files", []),

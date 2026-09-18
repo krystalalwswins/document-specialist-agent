@@ -63,7 +63,9 @@
 ### Agent Loop
 
 - **Planner**：用 `create_plan` 函数调用生成结构化计划，每步包含 `step_id`、`depends_on`、`completion_criteria` 和可选工具。运行时校验 Schema、ID 唯一性、依赖存在性与无环性；非法计划直接失败。
-- **计划留存**：版本 1 的初始计划在执行前写入 `Task.plan`，查询 API 可返回完整计划；旧任务没有计划时返回 `null`。计划步骤与 `Task.steps` 中的真实工具调用记录分开保存。目前 Executor 读取计划摘要，依赖调度、完成条件判定和局部重规划见 P0-2。
+- **计划留存**：版本 1 的初始计划在执行前写入 `Task.plan`，查询 API 可返回完整计划；旧任务没有计划时返回 `null`。计划步骤与 `Task.steps` 中的真实工具调用记录分开保存。
+- **执行绑定**：每个 Tool Call 记录 `plan_step_id` 与 `tool_call_id`，只有依赖已完成的计划步骤可以调度，已完成步骤不可重放；步骤完成由 `complete_plan_step` 携带的 `completion_criteria` 证据判定，工具返回 success 不等于业务步骤完成。
+- **局部重规划**：工具不可恢复失败、数据缺失、完成条件未满足或依赖失效时，模型可请求 `request_replan`；新计划版本 +1，只替换未完成部分，预算由 `max_replans` 限制，超限任务明确失败。`Task.plan_events` 记录创建、绑定、完成、失败与重规划全过程。
 - **Executor**：多轮 tool-calling 循环——模型决策 → 工具执行 → 结果回传 → 再决策，直到产出最终答案。
 - **终止控制**：`max_iterations` 限制单次执行的轮数；单步失败不中断，错误交回模型决定换路。
 - **可观测**：每次 LLM 调用与工具调用都写入任务指标（`llm_events` / `retry_events`）。
