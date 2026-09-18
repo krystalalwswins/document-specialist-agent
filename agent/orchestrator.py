@@ -52,6 +52,8 @@ class AgentOrchestrator:
                 task.user_input,
                 on_event=self._task_manager.metric_sink(task_id, "llm_events", phase="plan"),
             )
+            # Persist the validated plan before any execution can occur.
+            self._task_manager.set_plan(task_id, plan)
             answer, artifacts = self._execute_with_recovery(task_id, task.user_input, plan)
             result: dict[str, Any] = {"answer": answer}
             if artifacts:

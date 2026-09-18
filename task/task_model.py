@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
+from .plan_model import Plan
+
 
 def _new_id() -> str:
     return uuid.uuid4().hex
@@ -71,7 +73,7 @@ class TaskStateError(TaskError):
 
 @dataclass
 class TaskStep:
-    """One executable step produced by the planner / executed by the executor."""
+    """One actual tool invocation. Planned steps live separately in Task.plan."""
 
     name: str
     tool: Optional[str] = None
@@ -165,6 +167,8 @@ class Task:
     metrics: dict[str, Any] = field(default_factory=dict)
     created_time: str = field(default_factory=_utc_now_iso)
     updated_time: str = field(default_factory=_utc_now_iso)
+    # None also represents legacy task records created before plan persistence.
+    plan: Optional[Plan] = None
 
     _ALLOWED_TRANSITIONS = {
         # CREATED -> FAILED covers a task that is abandoned/failed before it ever
@@ -202,6 +206,16 @@ class Task:
         self._touch()
         return step
 
+    def set_plan(self, plan: Plan) -> None:
+        """Attach the initial plan once; versioned replanning belongs to P0-2."""
+        if self.status != TaskStatus.RUNNING or self.plan is not None:
+            raise TaskStateError("initial plan requires a running task without a plan")
+        plan.validate()
+        if plan.user_input != self.user_input or plan.version != 1:
+            raise TaskStateError("initial plan must match the task and have version 1")
+        self.plan = Plan.from_dict(plan.to_dict())
+        self._touch()
+
     def get_step(self, step_id: str) -> TaskStep:
         for step in self.steps:
             if step.id == step_id:
@@ -226,6 +240,7 @@ class Task:
             "user_input": self.user_input,
             "status": self.status.value,
             "steps": [step.to_dict() for step in self.steps],
+            "plan": self.plan.to_dict() if self.plan is not None else None,
             "result": self.result,
             "error": self.error,
             "input_files": self.input_files,
@@ -244,6 +259,7 @@ class Task:
             user_input=data["user_input"],
             status=TaskStatus(data["status"]),
             steps=[TaskStep.from_dict(step) for step in data.get("steps", [])],
+            plan=Plan.from_dict(data["plan"]) if data.get("plan") is not None else None,
             result=data.get("result"),
             error=data.get("error"),
             input_files=data.get("input_files", []),

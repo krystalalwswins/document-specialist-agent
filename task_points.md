@@ -3,7 +3,8 @@
 > 审计日期：2026-09-17  
 > 审计分支：`main`  
 > 审计基线：`1a2b7df12258f33e6912cb48f7118d051e38ee2b`  
-> 本文只梳理现状与开发计划，不修改业务代码。
+> 第 2–5 节保留上述基线的审计快照；后续实现进度以各任务下的执行记录为准。
+> 2026-09-18：P0-1 已完成，P0-2 及后续编号尚未开始。
 
 ## 1. 最终定位
 
@@ -166,6 +167,37 @@ flowchart TD
 P0 完成前，不新增 PostgreSQL、向量记忆、MCP 或多 Agent。
 
 ### P0-1：建立可执行的结构化计划模型
+
+**状态：已完成（2026-09-18，功能分支 `feat/harness-p0-1`）**
+
+最小修改方案：复用 O-P-E、FileTaskStore 和既有工具调用记录。将 Plan/PlanStep
+移到不依赖 LLM 的 `task/plan_model.py`，从 `agent/planner.py` 保留兼容导出；
+Planner 校验模型响应，Orchestrator 在 Executor 之前调用 `TaskManager.set_plan`。
+本轮不实现 DAG 调度、完成条件判定、Tool Call 绑定或重规划。
+
+实际修改：`task/plan_model.py`、`agent/planner.py`、`agent/orchestrator.py`、
+`task/task_model.py`、`task/task_manager.py`，以及对应测试和 README。
+
+完成内容：
+
+- `step_id`、`depends_on`、非空字符串列表 `completion_criteria`、可选 `tool`；
+- JSON Schema 校验字段类型，领域模型检查非空文本、重复 ID、缺失依赖、重复依赖及环；
+- 支持合法但非拓扑顺序输入的 DAG，当前只校验、不调度；
+- 计划版本由 Runtime 设为 1，完整计划在执行前保存至 `Task.plan`；
+- `Task.steps` 继续表示实际工具调用，计划步骤不混入调用记录；
+- 初始计划只允许写入一次，拒绝错任务、错误版本及非法生命周期写入；
+- `GET /tasks/{id}` 经现有序列化直接返回 `plan`，版本位于 `plan.version`；
+- 旧任务缺少 `plan` 时读取为 `None`，不伪造历史计划、不需要迁移文件；
+- 非法计划和计划落盘失败均阻止 Executor 执行。
+
+验收证据：新增测试先在旧代码上得到 21 项预期失败；实现后相关测试 125 passed；
+补充模型响应、生命周期、保存失败边界后，全量 **276 passed**（Linux / Python 3.12.14 / pytest 9.1.1）。
+一条 Starlette/AnyIO 弃用警告；本轮未调用真实 LLM、Docker 或 MinIO。
+旧安全测试仅更新 FakePlanner 输入，使其满足新计划契约，原安全断言全部保留。
+
+调用链：`Planner.plan → Schema + DAG 校验 → TaskManager.set_plan → FileTaskStore`
+，保存成功后才进入原有 `Executor.run`。学习说明及完整验收记录见
+[`docs/verification/02_plan_model.md`](docs/verification/02_plan_model.md)。
 
 **目标**
 
