@@ -8,6 +8,9 @@ from agent.orchestrator import AgentOrchestrator
 from agent.planner import Planner
 from agent.validator import ArtifactValidator
 from context.hooks import AfterToolCallHook
+from context.compactor import ContextCompactor
+from context.manager import ContextManager
+from context.token_estimator import TokenEstimator
 from context.tool_output_store import ToolOutputStore
 from core.config import Settings, get_settings
 from sandbox.client import SandboxClient
@@ -55,12 +58,25 @@ def build_orchestrator(settings: Settings | None = None) -> AgentOrchestrator:
     task_manager = TaskManager(FileTaskStore(settings.task_store_dir))
     llm = LLMClient(settings)
     planner = Planner(llm)
+    context_manager = ContextManager(
+        TokenEstimator(settings.llm_model),
+        ContextCompactor(
+            llm, max_attempts=settings.context_compaction_max_attempts
+        ),
+        soft_limit=settings.context_soft_limit_tokens,
+        hard_limit=settings.context_hard_limit_tokens,
+        target_tokens=settings.context_target_tokens,
+        recent_groups=settings.context_recent_groups,
+        failure_threshold=settings.context_compaction_failure_threshold,
+        summary_max_chars=settings.context_summary_max_chars,
+    )
     executor = Executor(
         llm,
         registry,
         task_manager,
         planner=planner,
         after_tool_call=after_tool_call,
+        context_manager=context_manager,
     )
     return AgentOrchestrator(
         task_manager,

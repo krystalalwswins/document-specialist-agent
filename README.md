@@ -72,8 +72,11 @@
 - **Executor**：多轮 tool-calling 循环——模型决策 → 工具执行 → 结果回传 → 再决策，直到产出最终答案。
 - **大结果卸载**：所有真实工具结果在进入任务记录和模型上下文前统一经过 `AfterToolCall` Hook；小结果原样回注，大结果完整写入本地 `ToolOutputStore`，上下文只保留预览、大小、内容类型、随机 `result_ref` 和回读提示。
 - **受控二次回读**：模型只能调用 `read_tool_output(result_ref, offset, limit)` 分页读取；`task_id` 由 Registry 注入而不暴露给模型，引用按任务隔离，单次回读受字符上限约束。
+- **Token 预算**：每次执行模型调用前同时估算消息与工具 Schema；估算优先使用真实 usage 校准，其次使用可选 tokenizer，最后按中英文字符密度折算。soft / hard / target 三档阈值为回答预留固定输出空间。
+- **完整消息组压缩**：只将较早的 `assistant tool_calls + 对应 tool results` 完整组交给独立压缩调用，绝不拆散调用与结果；结构化摘要保留任务目标、当前计划、确认事实、未完成事项和全部 `result_ref`。
+- **压缩熔断**：压缩请求超长或响应非法时，按完整组移除最早历史后有限重试；连续失败打开熔断器，后续改用确定性整组裁剪，仍超过 hard limit 才明确终止任务。
 - **终止控制**：`max_iterations` 限制单次执行的轮数；单步失败不中断，错误交回模型决定换路。
-- **可观测**：每次 LLM 调用与工具调用都写入任务指标（`llm_events` / `retry_events`）。
+- **可观测**：每次 LLM 调用、工具调用和上下文决策都写入任务指标（`llm_events` / `retry_events` / `context_events`）。
 
 ### 任务生命周期
 
@@ -134,7 +137,7 @@ document-specialist-agent/
 ├── security/         # 权限与路径/对象键策略
 ├── storage/          # 对象存储封装（MinIO / S3 兼容）
 ├── retry/            # 错误分类 + 重试策略
-├── context/          # 工具大结果卸载 Hook + 本地 ToolOutputStore
+├── context/          # 大结果卸载、Token 估算、消息分组、摘要压缩与熔断
 ├── demo/             # 端到端与离线演示脚本
 ├── docs/design/      # 各模块设计笔记
 └── tests/            # 离线单元/集成测试（fake LLM / SDK / S3）
@@ -222,8 +225,8 @@ curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
 | 沙箱 | `SANDBOX_API_KEY` | 空 | 沙箱鉴权头；为空则沙箱 API 完全开放 |
 | 沙箱 | `SANDBOX_DEFAULT_TIMEOUT` / `SANDBOX_MAX_TIMEOUT` | `30` / `120` | 代码执行默认与最大超时（秒） |
 | 沙箱 | `SANDBOX_CPUS` / `SANDBOX_MEMORY` / `SANDBOX_PIDS_LIMIT` | `2.0` / `4g` / `512` | 容器配额（compose 使用） |
-| 权限 | `ALLOWED_TOOLS` | 四个内置工具 | 工具白名单（JSON 数组） |
-| 权限 | `ALLOWED_PERMISSIONS` | `sandbox.execute` / `file.read` / `artifact.write` | 权限白名单 |
+| 权限 | `ALLOWED_TOOLS` | 五个内置工具 | 工具白名单（JSON 数组） |
+| 权限 | `ALLOWED_PERMISSIONS` | 含 `tool_output.read` | 权限白名单 |
 | 权限 | `REPORT_PREFIX` / `INPUT_PREFIX` | `reports` / `raw` | 产物对象前缀 / 输入对象前缀 |
 | 存储 | `MINIO_ENDPOINT` | `http://localhost:9000` | 对象存储地址 |
 | 存储 | `MINIO_PUBLIC_ENDPOINT` | 空 | 生成下载链接用的对外地址 |
@@ -231,6 +234,9 @@ curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
 | 模型 | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | — / `https://api.deepseek.com` / `deepseek-chat` | OpenAI 兼容模型配置 |
 | 模型 | `LLM_TIMEOUT` / `LLM_MAX_ATTEMPTS` | `60` / `3` | 单次调用超时与重试预算 |
 | 模型 | `LLM_RETRY_BASE_DELAY` / `LLM_RETRY_MAX_DELAY` | `1` / `10` | 退避区间（秒） |
+| 上下文 | `CONTEXT_TARGET_TOKENS` / `CONTEXT_SOFT_LIMIT_TOKENS` / `CONTEXT_HARD_LIMIT_TOKENS` | `32000` / `48000` / `56000` | 压缩目标、触发阈值与输入硬上限 |
+| 上下文 | `CONTEXT_WINDOW_TOKENS` / `CONTEXT_OUTPUT_RESERVE_TOKENS` | `64000` / `8000` | 模型窗口与回答预留空间 |
+| 上下文 | `CONTEXT_RECENT_GROUPS` | `2` | 优先保留的最近完整消息组数量 |
 | 任务 | `TASK_STORE_DIR` | `.data/tasks` | 任务落盘目录 |
 | 任务 | `TASK_STALE_AFTER_SECONDS` / `TASK_REAPER_INTERVAL_SECONDS` | `1800` / `60` | 僵死判定阈值与巡检间隔 |
 | 任务 | `TASK_MAX_WORKERS` / `TASK_MAX_PENDING` | `2` / `32` | 并发 worker 数与可排队数 |

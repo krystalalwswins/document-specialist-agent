@@ -4,7 +4,7 @@
 > 审计分支：`main`  
 > 审计基线：`1a2b7df12258f33e6912cb48f7118d051e38ee2b`  
 > 第 2–5 节保留上述基线的审计快照；后续实现进度以各任务下的执行记录为准。
-> 2026-09-18：P0-1、P0-2 已完成；P0-3 已实现并提交验收说明，等待独立测试；P0-4 及后续编号尚未开始。
+> 2026-09-18：P0-1、P0-2 已完成；P0-3、P0-4 已实现并提交验收说明，等待独立测试；P0-5 及后续编号尚未开始。
 
 ## 1. 最终定位
 
@@ -383,6 +383,43 @@ read_tool_output → Registry 注入 task_id → 限量分页回读 → Hook →
 - 回读仍受单次字符/Token 预算限制，不能一次重新塞回全部内容。
 
 ### P0-4：实现上下文预算、完整消息组压缩与熔断
+
+**状态：实现完成，待独立验收（2026-09-18，功能分支 `feat/harness-p0-4`）**
+
+最小修改方案：不改变 P0-2 的计划运行时和 P0-3 的 Tool Result Hook，仅在每轮
+Executor 主模型调用之前增加 `ContextManager.prepare`。上下文先经 TokenEstimator
+估算；超过 soft limit 后，以完整消息组为单位将较早历史交给 ContextCompactor；
+压缩失败按完整组有限缩小请求，连续失败打开任务内熔断器并切换到确定性整组裁剪；
+裁剪后仍超过 hard limit 才抛出明确异常。每个 run 使用独立 ContextSession，避免
+并发任务共享熔断状态。
+
+实际修改：新增 `context/token_estimator.py`、`context/message_groups.py`、
+`context/compactor.py`、`context/manager.py`；修改 `agent/executor.py`、
+`agent/llm_client.py`、`agent/wiring.py`、`core/config.py`、`.env.example`、README。
+
+完成内容：
+
+- 每轮调用前估算完整 messages 与工具 Schema，摘要和 result_ref 同样计入；
+- 真实 provider `prompt_tokens` 形成移动校准值，可选 tiktoken 次之，中英文字符折算兜底；
+- target < soft < hard，且 hard + output reserve 不得超过模型窗口；
+- `assistant.tool_calls` 与其全部 `role=tool` 结果组成不可拆分的原子消息组；
+- 压缩使用强制 `compact_context` Function Calling 和结构化 Schema；
+- Runtime 强制覆盖摘要中的原始目标、当前计划、完成/未完成步骤，并合并全部 result_ref；
+- 压缩调用自身失败时移除最早完整组后有限重试，不产生递归或无限模型调用；
+- 连续失败达到阈值后打开任务级熔断器，之后只执行确定性整组裁剪；
+- 确定性摘要保留目标、活动计划、未完成步骤、确认事实、错误和结果引用；
+- 上下文仍超过 hard limit 时抛 `context_hard_limit_exceeded`，由现有任务生命周期收口失败；
+- `context_events` 记录估算、大结果卸载、压缩、重试、熔断、裁剪、usage 校准和最终大小；
+- LLM 成功事件补充 prompt/completion/total tokens，供后续成本统计复用。
+
+本轮遵照任务要求未运行 pytest、真实 LLM、Docker 或 MinIO。待执行的测试矩阵、
+预期断言与建议命令见
+[`docs/verification/05_context_budget.md`](docs/verification/05_context_budget.md)。
+
+调用链：`Executor iteration → 刷新 System Prompt → ContextManager.prepare →
+TokenEstimator → 未超 soft 直接调用 / 超限后完整组压缩 → ContextCompactor →
+有限重试 → 熔断后确定性裁剪 → hard limit 门禁 → 主 LLM 调用 → usage 校准 →
+assistant/tool 消息继续进入下一轮`。
 
 **目标**
 
