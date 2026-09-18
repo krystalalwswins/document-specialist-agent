@@ -3,34 +3,16 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from jsonschema import Draft202012Validator, ValidationError
+
 from agent.llm_client import LLMClient
+from task.plan_model import Plan, PlanStep
 
 
 class PlannerError(Exception):
     """Raised when the planner cannot produce a valid plan."""
-
-
-@dataclass
-class PlanStep:
-    name: str
-    description: str = ""
-    tool: Optional[str] = None
-
-
-@dataclass
-class Plan:
-    user_input: str
-    steps: list[PlanStep] = field(default_factory=list)
-
-    def summary(self) -> str:
-        lines = [
-            f"{i + 1}. {step.name}" + (f" (tool: {step.tool})" if step.tool else "")
-            for i, step in enumerate(self.steps)
-        ]
-        return "\n".join(lines) if lines else "(no steps)"
 
 
 CREATE_PLAN_TOOL = {
@@ -40,17 +22,25 @@ CREATE_PLAN_TOOL = {
         "description": "Create an ordered execution plan. Each step optionally names a tool.",
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "steps": {
                     "type": "array",
+                    "minItems": 1,
                     "items": {
                         "type": "object",
+                        "additionalProperties": False,
                         "properties": {
-                            "name": {"type": "string"},
-                            "description": {"type": "string"},
-                            "tool": {"type": "string"},
+                            "step_id": {"type": "string", "minLength": 1},
+                            "name": {"type": "string", "minLength": 1},
+                            "description": {"type": "string", "minLength": 1},
+                            "tool": {"type": ["string", "null"], "minLength": 1},
+                            "depends_on": {"type": "array", "uniqueItems": True,
+                                           "items": {"type": "string", "minLength": 1}},
+                            "completion_criteria": {"type": "array", "minItems": 1,
+                                                    "items": {"type": "string", "minLength": 1}},
                         },
-                        "required": ["name", "description"],
+                        "required": ["step_id", "name", "description", "depends_on", "completion_criteria"],
                     },
                 },
             },
@@ -75,6 +65,9 @@ class Planner:
                 "content": (
                     "You are a planning agent. Decompose the user task into a small, "
                     "ordered list of concrete steps. Name a tool only when a step needs one."
+                    " Give each step a unique step_id, depends_on (IDs of prerequisites, "
+                    "empty for independent steps), and non-empty completion_criteria "
+                    "describing observable evidence of completion. Dependencies must be acyclic."
                 ),
             },
             {"role": "user", "content": user_input},
@@ -85,19 +78,17 @@ class Planner:
             tool_choice={"type": "function", "function": {"name": "create_plan"}},
             on_event=on_event,
         )
-        message = response.choices[0].message
-        if not message.tool_calls:
-            raise PlannerError("LLM did not return a plan")
-
-        args = json.loads(message.tool_calls[0].function.arguments or "{}")
-        steps = [
-            PlanStep(
-                name=step.get("name", ""),
-                description=step.get("description", ""),
-                tool=step.get("tool"),
-            )
-            for step in args.get("steps", [])
-        ]
-        if not steps:
-            raise PlannerError("plan is empty")
-        return Plan(user_input=user_input, steps=steps)
+        try:
+            calls = response.choices[0].message.tool_calls
+            if not calls:
+                raise PlannerError("LLM did not return a plan")
+            if len(calls) != 1 or calls[0].function.name != "create_plan":
+                raise PlannerError("expected exactly one create_plan call")
+            args = json.loads(calls[0].function.arguments)
+            if isinstance(args, dict) and args.get("steps") == []:
+                raise PlannerError("plan is empty")
+            Draft202012Validator(CREATE_PLAN_TOOL["function"]["parameters"]).validate(args)
+            # Identity and version belong to the runtime, not the model.
+            return Plan.from_dict({"user_input": user_input, "version": 1, "steps": args["steps"]})
+        except (ValueError, TypeError, KeyError, IndexError, AttributeError, ValidationError) as exc:
+            raise PlannerError(f"invalid plan: {exc}") from exc

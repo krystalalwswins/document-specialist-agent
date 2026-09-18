@@ -13,7 +13,10 @@ from task.task_model import TaskStatus
 
 class FakePlanner:
     def plan(self, user_input, on_event=None):
-        return Plan(user_input=user_input, steps=[PlanStep(name="step", tool="echo")])
+        return Plan(user_input=user_input, steps=[PlanStep(
+            name="step", tool="echo", step_id="step_1", description="echo input",
+            completion_criteria=["Echo result is available"],
+        )])
 
 
 class FakeExecutor:

@@ -62,7 +62,8 @@
 
 ### Agent Loop
 
-- **Planner**：用 `create_plan` 函数调用强制结构化输出计划，空计划直接失败，不盲执行。
+- **Planner**：用 `create_plan` 函数调用生成结构化计划，每步包含 `step_id`、`depends_on`、`completion_criteria` 和可选工具。运行时校验 Schema、ID 唯一性、依赖存在性与无环性；非法计划直接失败。
+- **计划留存**：版本 1 的初始计划在执行前写入 `Task.plan`，查询 API 可返回完整计划；旧任务没有计划时返回 `null`。计划步骤与 `Task.steps` 中的真实工具调用记录分开保存。目前 Executor 读取计划摘要，依赖调度、完成条件判定和局部重规划见 P0-2。
 - **Executor**：多轮 tool-calling 循环——模型决策 → 工具执行 → 结果回传 → 再决策，直到产出最终答案。
 - **终止控制**：`max_iterations` 限制单次执行的轮数；单步失败不中断，错误交回模型决定换路。
 - **可观测**：每次 LLM 调用与工具调用都写入任务指标（`llm_events` / `retry_events`）。

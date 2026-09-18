@@ -12,6 +12,7 @@ from threading import RLock
 from typing import Any, Callable, Optional
 
 from .task_model import Task, TaskError, TaskNotFoundError, TaskStateError, TaskStatus, TaskStep
+from .plan_model import Plan
 
 
 def _seconds_since(timestamp: Optional[str], now: datetime) -> Optional[float]:
@@ -120,6 +121,12 @@ class TaskManager:
             task.start()
             self._store.update(task)
         return task
+
+    def set_plan(self, task_id: str, plan: Plan) -> None:
+        with self._lock:
+            task = self._store.get(task_id)
+            task.set_plan(plan)
+            self._store.update(task)
 
     def succeed_task(self, task_id: str, result: Optional[dict[str, Any]] = None) -> Task:
         with self._lock:

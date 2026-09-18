@@ -290,7 +290,12 @@ def test_uncertain_execution_marks_whole_task_failed():
     llm = ScriptedLLM([call("run_python", '{"code":"while True: pass"}')])
     executor = Executor(llm, registry, manager)
     orchestrator = AgentOrchestrator(
-        manager, SimpleNamespace(plan=lambda text, on_event=None: Plan(text)), executor
+        manager, SimpleNamespace(plan=lambda text, on_event=None: Plan.from_dict({
+            "user_input": text, "version": 1, "steps": [{
+                "step_id": "probe", "name": "probe", "description": "execute timeout probe",
+                "depends_on": [], "completion_criteria": ["Probe execution completes"],
+            }],
+        })), executor
     )
     task = manager.create_task("timeout probe")
     with pytest.raises(UnsafeExecutionStateError):
