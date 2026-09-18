@@ -249,11 +249,18 @@ curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
 ## 8. 测试
 
 ```powershell
+.venv\Scripts\python.exe -m pytest -q tests/test_harness_v1_scenarios.py
 .venv\Scripts\python.exe -m pytest -q
-# 242 passed, 1 skipped
 ```
 
-默认全部离线：LLM、沙箱 SDK、S3 均使用 fake，不需要 Docker 与 API Key。跳过的 1 条是"符号链接路径守卫"——Windows 未开启开发者模式时无法创建符号链接，在 Linux 上会执行。
+`tests/test_harness_v1_scenarios.py` 是 Harness V1 的八条可执行学习场景，覆盖静态计划、
+工具失败换路、局部重规划、大结果卸载与回读、上下文压缩与熔断，以及两类循环预算。
+默认测试全部离线：LLM、沙箱 SDK、S3 均使用 fake，不需要 Docker 与 API Key。
+
+README 不固化易过期的 passed 数量；当前版本的环境、commit、完整输出和真实 Docker
+结果统一记录在
+[`docs/verification/06_harness_v1.md`](docs/verification/06_harness_v1.md)。Windows
+未开启开发者模式时，符号链接路径守卫用例可能因无法创建符号链接而跳过。
 
 真机链路（Docker + LLM Key）另行验证，覆盖：输入装载、沙箱执行、PDF/Excel 解析、产物上传与预签名下载、并发任务隔离、产物校验与修复重试、僵死任务回收。
 
@@ -264,7 +271,9 @@ curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
 - **沙箱是单容器共享内核**：文件层面已按任务隔离，但代码执行仍共用同一个容器；要做强隔离或真正并行，需要一任务一容器或沙箱池。
 - **任务存储是单进程文件存储**：多 worker 部署需要换成 Redis 等共享存储。
 - **无多租户**：没有账号体系，`GET /tasks` 返回该实例的全部任务。
-- **无 Token / 成本计量**：`metrics` 预留了字段，尚未统计 token 消耗。
+- **有 Token 用量轨迹，尚无价格成本换算**：模型返回 usage 时会记录
+  prompt/completion/total tokens 并用于后续上下文估算校准；当前未维护供应商单价表，
+  因此不计算货币成本。
 - **无 CI 与部署产物**：仓库没有 GitHub Actions，也没有 API 服务自身的 Dockerfile 与反向代理配置。
 - 沙箱容器使用 `seccomp:unconfined`，且默认不启用 `SANDBOX_API_KEY`——这是本地原型的安全边界，不适合直接暴露到公网。
 
@@ -274,3 +283,4 @@ curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
 
 - `docs/design/01_task_module.md` ~ `10_security_module.md`：各模块设计笔记（统一 10 小节模板）。
 - `docs/verification/01_security.md`：安全模块的验证记录（含未验证边界）。
+- `docs/verification/06_harness_v1.md`：Harness V1 证据矩阵与当前回归/真实环境验证记录。

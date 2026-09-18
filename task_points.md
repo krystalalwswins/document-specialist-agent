@@ -4,7 +4,7 @@
 > 审计分支：`main`  
 > 审计基线：`1a2b7df12258f33e6912cb48f7118d051e38ee2b`  
 > 第 2–5 节保留上述基线的审计快照；后续实现进度以各任务下的执行记录为准。
-> 2026-09-18：P0-1、P0-2 已完成；P0-3、P0-4 已实现并提交验收说明，等待独立测试；P0-5 及后续编号尚未开始。
+> 2026-09-18：P0-1、P0-2 已完成；P0-3、P0-4 已实现并提交验收说明，等待独立测试；P0-5 已补齐端到端 Fake LLM 场景和验证记录模板，等待独立环境执行；后续编号尚未开始。
 
 ## 1. 最终定位
 
@@ -465,6 +465,22 @@ P0-3。
 - 超过 hard limit 且无法安全收敛时，任务给出明确终止原因。
 
 ### P0-5：补齐 Harness V1 回归测试和真实验证记录
+
+**状态：测试与验证材料已实现，待独立执行（2026-09-18，功能分支 `feat/harness-p0-5`）**
+
+本轮新增 `tests/test_harness_v1_scenarios.py`，通过统一的
+`AgentOrchestrator.run` 入口覆盖静态计划、失败换路、局部重规划、大结果卸载与
+分页回读、上下文压缩、压缩熔断、最大执行轮数和最大重规划次数八条场景。Fake LLM
+只替代模型提供方，测试仍经过 Planner、Executor、Tool Registry 与 TaskManager，
+避免把多个孤立单元测试误称为端到端 Harness 证据。
+
+新增 [`docs/verification/06_harness_v1.md`](docs/verification/06_harness_v1.md)，
+建立“简历关键词 → 代码位置 → 测试证据”追踪矩阵，并为 commit、环境、完整 pytest、
+真实 Docker `security_smoke`、timeout probe 和安全边界预留逐项记录位置。
+
+遵照当前任务授权，本轮不运行测试、Docker、真实 LLM 或 MinIO；因此 P0-5 不能标为
+完全完成，也不预填任何 PASS。独立验收全部通过并回填原始输出后，再按验证文档第 7 节
+收口 P0。
 
 **目标**
 
