@@ -65,6 +65,9 @@ class BaseTool(ABC):
     # Tools that run user code inside the sandbox get the per-task directory as
     # their working directory, injected by the registry (never by the model).
     task_scoped_cwd: bool = False
+    # Runtime-only tools can receive the current task id without exposing it in
+    # their model-facing schema. Calls without a task context are rejected.
+    requires_task_context: bool = False
 
     @abstractmethod
     def parameters_schema(self) -> dict[str, Any]:

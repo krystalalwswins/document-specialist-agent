@@ -4,7 +4,7 @@
 > 审计分支：`main`  
 > 审计基线：`1a2b7df12258f33e6912cb48f7118d051e38ee2b`  
 > 第 2–5 节保留上述基线的审计快照；后续实现进度以各任务下的执行记录为准。
-> 2026-09-18：P0-1、P0-2 已完成，P0-3 及后续编号尚未开始。
+> 2026-09-18：P0-1、P0-2 已完成；P0-3 已实现并提交验收说明，等待独立测试；P0-4 及后续编号尚未开始。
 
 ## 1. 最终定位
 
@@ -312,6 +312,39 @@ P0-1。
 - 达到重规划上限后任务终止，不会形成 Planner–Executor 无限循环。
 
 ### P0-3：实现通用工具大结果卸载与二次回读
+
+**状态：实现完成，待独立验收（2026-09-18，功能分支 `feat/harness-p0-3`）**
+
+最小修改方案：保留既有 Tool Registry 与 ReAct 循环，在工具真实执行完成后、
+任务步骤落盘和 Tool Result 回注模型之前加入统一 `AfterToolCallHook`。小结果沿用
+原始行为；超过字符阈值的结果原子写入本地 `ToolOutputStore`，TaskStep 与模型消息
+只接收带预览和逻辑引用的有界观察。新增 `read_tool_output` 工具按字符 offset/limit
+分页回读，由 Registry 注入当前 `task_id`，模型不能提交任务 ID 或文件路径。
+
+实际修改：新增 `context/tool_output_store.py`、`context/hooks.py`、
+`tools/tool_output_tool.py`；修改 `agent/executor.py`、`agent/wiring.py`、
+`tools/base_tool.py`、`tools/tool_registry.py`、`task/task_model.py`、
+`task/task_manager.py`、`core/config.py`、`.env.example` 与 README。
+
+完成内容：
+
+- 128 位随机 `result_ref`，仅允许固定格式的逻辑引用，不接受路径；
+- 结果按 `<store>/<task_id>/<result_ref>.json` 原子落盘，重启后仍可读取；
+- 大结果回注只含 preview、result_ref、字节数、字符数、内容类型和回读提示；
+- TaskStep 增加引用、大小、内容类型和截断标记，兼容旧任务 JSON；
+- Registry 为需要任务上下文的工具注入 task_id，未绑定任务的调用直接拒绝；
+- `read_tool_output` 单页上限由配置固定，返回 next_offset 指引后续读取；
+- 引用格式、任务命名空间和实际记录三重校验，跨任务读取返回稳定拒绝原因；
+- Hook/存储失败采取 fail-closed：步骤失败且原始大结果不进入任务 JSON 或模型消息。
+- retry event 的错误文本设置固定上限，避免大错误绕过 Hook 膨胀任务轨迹。
+
+本轮遵照任务要求未运行 pytest、真实 LLM、Docker 或 MinIO。待执行的测试矩阵、
+预期断言与建议命令见
+[`docs/verification/04_tool_output_offload.md`](docs/verification/04_tool_output_offload.md)。
+
+调用链：`ToolRegistry.execute → ToolResult → AfterToolCallHook → 小结果原样回注 /
+大结果写 ToolOutputStore → TaskStep 保存预览+result_ref → LLM 调用
+read_tool_output → Registry 注入 task_id → 限量分页回读 → Hook → LLM`。
 
 **目标**
 

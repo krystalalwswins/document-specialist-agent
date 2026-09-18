@@ -16,6 +16,7 @@ from typing import Any
 
 from agent.llm_client import LLMClient
 from agent.planner import Plan, Planner, PlannerError
+from context.hooks import AfterToolCallHook, PreparedToolOutput
 from retry.retry_policy import RetryDecision, RetryPolicy, classify_exception
 from task.plan_model import PlanValidationError
 from task.plan_state import PlanRunState
@@ -33,6 +34,7 @@ PLAN_STEP_ARGUMENT = "plan_step_id"
 COMPLETE_PLAN_STEP = "complete_plan_step"
 REQUEST_REPLAN = "request_replan"
 REPLAN_REASON_CODES = ("tool_failure", "missing_data", "criteria_unmet", "dependency_invalid")
+MAX_RETRY_EVENT_ERROR_CHARS = 2000
 
 COMPLETE_PLAN_STEP_TOOL = {
     "type": "function",
@@ -97,6 +99,10 @@ class ReplanBudgetExceededError(Exception):
     """Raised when a task asks for more local replans than its budget allows."""
 
 
+class ToolOutputProcessingError(Exception):
+    """The runtime could not safely persist or bound a tool observation."""
+
+
 class Executor:
     def __init__(
         self,
@@ -107,6 +113,7 @@ class Executor:
         retry_policy: RetryPolicy | None = None,
         planner: Planner | None = None,
         max_replans: int = 2,
+        after_tool_call: AfterToolCallHook | None = None,
     ) -> None:
         self._llm = llm
         self._registry = registry
@@ -116,6 +123,7 @@ class Executor:
         # None means "no local replanning configured": a request becomes an observation.
         self._planner = planner
         self._max_replans = max_replans
+        self._after_tool_call = after_tool_call
 
     def run(
         self,
@@ -289,9 +297,31 @@ class Executor:
             task_id, name, arguments, step_id=step.id, tool_call_id=call.id,
         )
         self._task_manager.set_step_attempts(task_id, step.id, attempts)
+        try:
+            prepared = self._prepare_tool_output(
+                task_id=task_id,
+                tool_name=name,
+                tool_call_id=call.id,
+                result=result,
+            )
+        except Exception as exc:
+            # Failing closed keeps an unpersisted large result out of both the
+            # model context and the task JSON.
+            self._task_manager.fail_step(
+                task_id, step.id, error="tool_output_processing_failed"
+            )
+            raise ToolOutputProcessingError("tool_output_processing_failed") from exc
 
         if result.success:
-            self._task_manager.succeed_step(task_id, step.id, output=result.output)
+            self._task_manager.succeed_step(
+                task_id,
+                step.id,
+                output=prepared.task_text,
+                result_ref=prepared.result_ref,
+                result_size_bytes=prepared.size_bytes,
+                result_content_type=prepared.content_type,
+                result_truncated=prepared.truncated,
+            )
             # Only deliverables are artifacts; other tools also attach
             # metadata (parse_document reports chars/markdown_path).
             if result.metadata.get("kind") == "artifact":
@@ -303,7 +333,13 @@ class Executor:
                 self._task_manager.add_artifact(task_id, artifact)
         else:
             self._task_manager.fail_step(
-                task_id, step.id, error=result.error or "unknown error"
+                task_id,
+                step.id,
+                error=prepared.task_text,
+                result_ref=prepared.result_ref,
+                result_size_bytes=prepared.size_bytes,
+                result_content_type=prepared.content_type,
+                result_truncated=prepared.truncated,
             )
             if step_id is not None:
                 # Observation only: a tool error never triggers a replan by itself.
@@ -314,14 +350,38 @@ class Executor:
                     "tool": name,
                     "tool_call_id": call.id,
                     "task_step_id": step.id,
-                    "error": result.error or "unknown error",
+                    "error": prepared.task_text,
                     "error_type": result.error_type.value if result.error_type else None,
                 })
         if result.terminal:
-            raise UnsafeExecutionStateError(result.error or "unsafe sandbox execution state")
+            raise UnsafeExecutionStateError(prepared.task_text)
 
-        self._observe(messages, call.id, result.to_text())
+        self._observe(messages, call.id, prepared.model_text)
         return self._plan_state(task_id, state.plan)
+
+    def _prepare_tool_output(
+        self,
+        *,
+        task_id: str,
+        tool_name: str,
+        tool_call_id: str | None,
+        result: ToolResult,
+    ) -> PreparedToolOutput:
+        """Run the common post-tool hook before persistence or model feedback."""
+        if self._after_tool_call is not None:
+            return self._after_tool_call.process(
+                task_id=task_id,
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                result=result,
+            )
+        raw = result.output if result.success else (result.error or "unknown error")
+        return PreparedToolOutput(
+            model_text=result.to_text(),
+            task_text=raw,
+            size_bytes=len(raw.encode("utf-8")),
+            content_type="text/plain; charset=utf-8",
+        )
 
     @staticmethod
     def _bind_step(state: PlanRunState, declared: Any) -> tuple[str | None, str | None, bool]:
@@ -629,13 +689,19 @@ class Executor:
         duration_ms: int,
         final_status: str,
     ) -> dict[str, Any]:
+        bounded_error = error_message
+        if isinstance(error_message, str) and len(error_message) > MAX_RETRY_EVENT_ERROR_CHARS:
+            bounded_error = (
+                error_message[:MAX_RETRY_EVENT_ERROR_CHARS]
+                + "...[retry event error truncated]"
+            )
         return {
             "occurred_at": datetime.now(timezone.utc).isoformat(),
             "task_id": task_id,
             "tool_name": tool_name,
             "attempt": attempt,
             "error_type": error_type.value if error_type else None,
-            "error_message": error_message,
+            "error_message": bounded_error,
             "retry_reason": retry_reason,
             "duration_ms": duration_ms,
             "final_status": final_status,

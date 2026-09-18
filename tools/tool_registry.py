@@ -68,9 +68,18 @@ class ToolRegistry:
             if task_id is not None:
                 arguments = self._bind_to_task(tool, arguments, task_id)
             self._permissions.check(tool, arguments)
+            if tool.requires_task_context and task_id is None:
+                return ToolResult(
+                    False,
+                    error="task_context_required",
+                    error_type=ErrorType.PERMISSION_DENIED,
+                )
+            runtime_arguments = dict(arguments)
+            if task_id is not None and tool.requires_task_context:
+                runtime_arguments["task_id"] = task_id
             if task_id is not None and tool.task_scoped_cwd:
-                return tool.execute(**arguments, cwd=self.task_directory(task_id))
-            return tool.execute(**arguments)
+                runtime_arguments["cwd"] = self.task_directory(task_id)
+            return tool.execute(**runtime_arguments)
         except PermissionDenied as exc:
             return ToolResult(False, error=str(exc), error_type=ErrorType.PERMISSION_DENIED)
 
