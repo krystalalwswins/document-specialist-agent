@@ -7,6 +7,8 @@ from agent.llm_client import LLMClient
 from agent.orchestrator import AgentOrchestrator
 from agent.planner import Planner
 from agent.validator import ArtifactValidator
+from context.hooks import AfterToolCallHook
+from context.tool_output_store import ToolOutputStore
 from core.config import Settings, get_settings
 from sandbox.client import SandboxClient
 from sandbox.inputs import InputStager
@@ -18,6 +20,7 @@ from tools.file_tool import FileTool
 from tools.report_tool import ReportTool
 from tools.sandbox_tool import SandboxTool
 from tools.tool_registry import ToolRegistry
+from tools.tool_output_tool import ReadToolOutputTool
 from security.permission_manager import PermissionManager
 
 
@@ -38,10 +41,27 @@ def build_orchestrator(settings: Settings | None = None) -> AgentOrchestrator:
     registry.register(ParseDocumentTool(sandbox, max_chars=settings.document_max_chars))
     registry.register(ReportTool(sandbox, storage, report_prefix=settings.report_prefix))
 
+    tool_output_store = ToolOutputStore(
+        settings.tool_output_store_dir,
+        max_read_chars=settings.tool_output_read_max_chars,
+    )
+    registry.register(ReadToolOutputTool(tool_output_store))
+    after_tool_call = AfterToolCallHook(
+        tool_output_store,
+        inline_chars=settings.tool_output_inline_chars,
+        preview_chars=settings.tool_output_preview_chars,
+    )
+
     task_manager = TaskManager(FileTaskStore(settings.task_store_dir))
     llm = LLMClient(settings)
     planner = Planner(llm)
-    executor = Executor(llm, registry, task_manager, planner=planner)
+    executor = Executor(
+        llm,
+        registry,
+        task_manager,
+        planner=planner,
+        after_tool_call=after_tool_call,
+    )
     return AgentOrchestrator(
         task_manager,
         planner,

@@ -47,6 +47,9 @@
         │          │          │              │          │
         └──────────┴──────────┴──────────────┴──────────┘
                               │
+                AfterToolCall → ToolOutputStore
+                    大结果卸载 · 分页二次回读
+                              │
                    Docker Sandbox（隔离执行）
                               │
               ArtifactValidator → 对象存储（MinIO/S3）
@@ -67,6 +70,8 @@
 - **执行绑定**：每个 Tool Call 记录 `plan_step_id` 与 `tool_call_id`，只有依赖已完成的计划步骤可以调度，已完成步骤不可重放；步骤完成由 `complete_plan_step` 携带的 `completion_criteria` 证据判定，工具返回 success 不等于业务步骤完成。
 - **局部重规划**：工具不可恢复失败、数据缺失、完成条件未满足或依赖失效时，模型可请求 `request_replan`；新计划版本 +1，只替换未完成部分，预算由 `max_replans` 限制，超限任务明确失败。`Task.plan_events` 记录创建、绑定、完成、失败与重规划全过程。
 - **Executor**：多轮 tool-calling 循环——模型决策 → 工具执行 → 结果回传 → 再决策，直到产出最终答案。
+- **大结果卸载**：所有真实工具结果在进入任务记录和模型上下文前统一经过 `AfterToolCall` Hook；小结果原样回注，大结果完整写入本地 `ToolOutputStore`，上下文只保留预览、大小、内容类型、随机 `result_ref` 和回读提示。
+- **受控二次回读**：模型只能调用 `read_tool_output(result_ref, offset, limit)` 分页读取；`task_id` 由 Registry 注入而不暴露给模型，引用按任务隔离，单次回读受字符上限约束。
 - **终止控制**：`max_iterations` 限制单次执行的轮数；单步失败不中断，错误交回模型决定换路。
 - **可观测**：每次 LLM 调用与工具调用都写入任务指标（`llm_events` / `retry_events`）。
 
@@ -89,11 +94,13 @@
   | `read_file` | 读取文本文件；遇到二进制文档直接提示改用 `parse_document` |
   | `parse_document` | PDF / Excel / PPTX / DOCX / CSV / JSON → Markdown |
   | `save_report` | 沙箱文件 → 对象存储 → 预签名下载链接 |
+  | `read_tool_output` | 按逻辑引用分页回读被卸载的大型工具结果 |
 
 ### 隔离与安全
 
 - **容器沙箱**：Agent 生成的代码只在 AIO Sandbox 容器内执行；compose 中限制了 CPU / 内存 / PID 配额。
 - **任务级隔离**：每个任务拥有独立沙箱目录 `tasks/<task_id>` 与独立对象前缀 `reports/<task_id>/`。工具参数在调用前被重写进任务命名空间，跨任务路径直接拒绝；`run_python` 的工作目录也由运行时注入，模型无法写到共享根目录。两个同名输入、同名产物的任务并发执行不会互相覆盖。
+- **结果引用隔离**：大结果引用采用 128 位随机逻辑 ID，不接受文件路径；Registry 只把当前任务 ID 注入回读工具，非法引用、路径式引用和跨任务引用统一拒绝。
 - **权限白名单**：工具白名单 + 权限声明 + 工作区路径校验（拦截 `..`、绝对路径、符号链接逃逸）+ 对象前缀校验。
 - **输入装载**：`input_files` 指定的对象键必须落在 `INPUT_PREFIX` 下，越界、缺失、空对象都会让任务以明确原因失败。
 - **API 鉴权**：设置 `API_TOKEN` 后，所有请求需带 `X-API-Token`（常量时间比较）。
@@ -127,6 +134,7 @@ document-specialist-agent/
 ├── security/         # 权限与路径/对象键策略
 ├── storage/          # 对象存储封装（MinIO / S3 兼容）
 ├── retry/            # 错误分类 + 重试策略
+├── context/          # 工具大结果卸载 Hook + 本地 ToolOutputStore
 ├── demo/             # 端到端与离线演示脚本
 ├── docs/design/      # 各模块设计笔记
 └── tests/            # 离线单元/集成测试（fake LLM / SDK / S3）

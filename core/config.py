@@ -28,9 +28,22 @@ class Settings(BaseSettings):
     sandbox_max_timeout: int = Field(default=120, ge=1)
     sandbox_http_grace: int = Field(default=10, ge=1, le=60)
     allowed_tools: list[str] = Field(
-        default_factory=lambda: ["run_python", "read_file", "parse_document", "save_report"]
+        default_factory=lambda: [
+            "run_python",
+            "read_file",
+            "parse_document",
+            "save_report",
+            "read_tool_output",
+        ]
     )
-    allowed_permissions: list[str] = Field(default_factory=lambda: ["sandbox.execute", "file.read", "artifact.write"])
+    allowed_permissions: list[str] = Field(
+        default_factory=lambda: [
+            "sandbox.execute",
+            "file.read",
+            "artifact.write",
+            "tool_output.read",
+        ]
+    )
     report_prefix: str = "reports"
     # Object-storage prefix that task inputs may be loaded from (OSS -> sandbox).
     input_prefix: str = Field(default="raw", min_length=1)
@@ -42,6 +55,10 @@ class Settings(BaseSettings):
             raise ValueError("default timeout must not exceed max timeout")
         if self.llm_retry_base_delay > self.llm_retry_max_delay:
             raise ValueError("llm retry base delay must not exceed max delay")
+        if self.tool_output_preview_chars > self.tool_output_inline_chars:
+            raise ValueError("tool output preview must not exceed inline threshold")
+        if self.tool_output_read_max_chars > self.tool_output_inline_chars // 2:
+            raise ValueError("tool output read limit must not exceed half the inline threshold")
         workspace_path(self.sandbox_workspace, ".", allow_root=True)
         object_key(self.report_prefix, self.report_prefix.rstrip("/") + "/probe")
         object_key(self.input_prefix, self.input_prefix.rstrip("/") + "/probe")
@@ -84,6 +101,13 @@ class Settings(BaseSettings):
     task_max_pending: int = Field(default=32, ge=0)
     # How many extra attempts a task gets after artifact validation fails.
     task_max_recovery_attempts: int = Field(default=1, ge=0)
+
+    # Large tool outputs stay local and are recalled through opaque, task-bound
+    # references. These limits are character budgets; P0-4 adds token budgeting.
+    tool_output_store_dir: str = Field(default=".data/tool_outputs", min_length=1)
+    tool_output_inline_chars: int = Field(default=16000, ge=1000)
+    tool_output_preview_chars: int = Field(default=2000, ge=100)
+    tool_output_read_max_chars: int = Field(default=4000, ge=100)
 
     # Document parsing budget (characters returned to the model per call).
     document_max_chars: int = Field(default=20000, ge=100)

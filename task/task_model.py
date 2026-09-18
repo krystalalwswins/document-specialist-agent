@@ -89,6 +89,12 @@ class TaskStep:
     # Both stay optional so records of an unbound call and pre-P0-2 JSON remain valid.
     plan_step_id: Optional[str] = None
     tool_call_id: Optional[str] = None
+    # P0-3 keeps large results in ToolOutputStore. The task record contains only
+    # the bounded preview above plus this logical reference and its metadata.
+    result_ref: Optional[str] = None
+    result_size_bytes: Optional[int] = None
+    result_content_type: Optional[str] = None
+    result_truncated: bool = False
 
     _ALLOWED_TRANSITIONS = {
         StepStatus.PENDING: {StepStatus.RUNNING},
@@ -107,17 +113,57 @@ class TaskStep:
         self._transition(StepStatus.RUNNING)
         self.started_at = _utc_now_iso()
 
-    def succeed(self, output: Optional[str] = None) -> None:
+    def succeed(
+        self,
+        output: Optional[str] = None,
+        *,
+        result_ref: Optional[str] = None,
+        result_size_bytes: Optional[int] = None,
+        result_content_type: Optional[str] = None,
+        result_truncated: bool = False,
+    ) -> None:
         self._transition(StepStatus.SUCCESS)
         self.output = output
+        self._set_result_reference(
+            result_ref,
+            result_size_bytes,
+            result_content_type,
+            result_truncated,
+        )
         self.finished_at = _utc_now_iso()
         self.duration_ms = _duration_ms(self.started_at, self.finished_at)
 
-    def fail(self, error: str) -> None:
+    def fail(
+        self,
+        error: str,
+        *,
+        result_ref: Optional[str] = None,
+        result_size_bytes: Optional[int] = None,
+        result_content_type: Optional[str] = None,
+        result_truncated: bool = False,
+    ) -> None:
         self._transition(StepStatus.FAILED)
         self.error = error
+        self._set_result_reference(
+            result_ref,
+            result_size_bytes,
+            result_content_type,
+            result_truncated,
+        )
         self.finished_at = _utc_now_iso()
         self.duration_ms = _duration_ms(self.started_at, self.finished_at)
+
+    def _set_result_reference(
+        self,
+        result_ref: Optional[str],
+        result_size_bytes: Optional[int],
+        result_content_type: Optional[str],
+        result_truncated: bool,
+    ) -> None:
+        self.result_ref = result_ref
+        self.result_size_bytes = result_size_bytes
+        self.result_content_type = result_content_type
+        self.result_truncated = result_truncated
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -133,6 +179,10 @@ class TaskStep:
             "attempts": self.attempts,
             "plan_step_id": self.plan_step_id,
             "tool_call_id": self.tool_call_id,
+            "result_ref": self.result_ref,
+            "result_size_bytes": self.result_size_bytes,
+            "result_content_type": self.result_content_type,
+            "result_truncated": self.result_truncated,
         }
 
     @classmethod
@@ -150,6 +200,10 @@ class TaskStep:
             attempts=data.get("attempts", 1),
             plan_step_id=data.get("plan_step_id"),
             tool_call_id=data.get("tool_call_id"),
+            result_ref=data.get("result_ref"),
+            result_size_bytes=data.get("result_size_bytes"),
+            result_content_type=data.get("result_content_type"),
+            result_truncated=bool(data.get("result_truncated", False)),
         )
 
 

@@ -165,20 +165,50 @@ class TaskManager:
         return step
 
     def succeed_step(
-        self, task_id: str, step_id: str, output: Optional[str] = None
+        self,
+        task_id: str,
+        step_id: str,
+        output: Optional[str] = None,
+        *,
+        result_ref: Optional[str] = None,
+        result_size_bytes: Optional[int] = None,
+        result_content_type: Optional[str] = None,
+        result_truncated: bool = False,
     ) -> TaskStep:
         with self._lock:
             task = self._store.get(task_id)
             step = task.get_step(step_id)
-            step.succeed(output)
+            step.succeed(
+                output,
+                result_ref=result_ref,
+                result_size_bytes=result_size_bytes,
+                result_content_type=result_content_type,
+                result_truncated=result_truncated,
+            )
             self._store.update(task)
         return step
 
-    def fail_step(self, task_id: str, step_id: str, error: str) -> TaskStep:
+    def fail_step(
+        self,
+        task_id: str,
+        step_id: str,
+        error: str,
+        *,
+        result_ref: Optional[str] = None,
+        result_size_bytes: Optional[int] = None,
+        result_content_type: Optional[str] = None,
+        result_truncated: bool = False,
+    ) -> TaskStep:
         with self._lock:
             task = self._store.get(task_id)
             step = task.get_step(step_id)
-            step.fail(error)
+            step.fail(
+                error,
+                result_ref=result_ref,
+                result_size_bytes=result_size_bytes,
+                result_content_type=result_content_type,
+                result_truncated=result_truncated,
+            )
             self._store.update(task)
         return step
 
