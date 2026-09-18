@@ -17,6 +17,7 @@ from typing import Any
 from agent.llm_client import LLMClient
 from agent.planner import Plan, Planner, PlannerError
 from context.hooks import AfterToolCallHook, PreparedToolOutput
+from context.manager import ContextManager, ContextSnapshot
 from retry.retry_policy import RetryDecision, RetryPolicy, classify_exception
 from task.plan_model import PlanValidationError
 from task.plan_state import PlanRunState
@@ -114,6 +115,7 @@ class Executor:
         planner: Planner | None = None,
         max_replans: int = 2,
         after_tool_call: AfterToolCallHook | None = None,
+        context_manager: ContextManager | None = None,
     ) -> None:
         self._llm = llm
         self._registry = registry
@@ -124,6 +126,7 @@ class Executor:
         self._planner = planner
         self._max_replans = max_replans
         self._after_tool_call = after_tool_call
+        self._context_manager = context_manager
 
     def run(
         self,
@@ -154,18 +157,53 @@ class Executor:
                 }
             )
 
+        context_session = (
+            self._context_manager.new_session(pinned_count=len(messages))
+            if self._context_manager is not None
+            else None
+        )
         replans_used = 0
         for iteration in range(1, self._max_iterations + 1):
             # Re-render instead of appending: the model always sees live progress,
             # and the message history does not grow with a status line per round.
             messages[0] = {"role": "system", "content": self._system_prompt(state)}
+            tool_schemas = self._tool_schemas()
+            context_sink = self._task_manager.metric_sink(
+                task_id, "context_events", iteration=iteration
+            )
+            if self._context_manager is not None and context_session is not None:
+                messages = self._context_manager.prepare(
+                    messages,
+                    tool_schemas,
+                    context_session,
+                    ContextSnapshot(
+                        goal=user_input,
+                        active_plan=state.plan.summary(),
+                        completed_work=state.completed_ids(),
+                        unfinished_work=state.unfinished_ids(),
+                    ),
+                    on_context_event=context_sink,
+                    on_llm_event=self._task_manager.metric_sink(
+                        task_id,
+                        "llm_events",
+                        phase="context_compaction",
+                        iteration=iteration,
+                    ),
+                )
             response = self._llm.chat(
                 messages,
-                tools=self._tool_schemas(),
+                tools=tool_schemas,
                 on_event=self._task_manager.metric_sink(
                     task_id, "llm_events", phase="execute", iteration=iteration
                 ),
             )
+            if self._context_manager is not None:
+                self._context_manager.observe_response(
+                    messages,
+                    tool_schemas,
+                    response,
+                    on_context_event=context_sink,
+                )
             message = response.choices[0].message
             messages.append(self._assistant_message(message))
 
@@ -311,6 +349,17 @@ class Executor:
                 task_id, step.id, error="tool_output_processing_failed"
             )
             raise ToolOutputProcessingError("tool_output_processing_failed") from exc
+
+        if prepared.truncated:
+            self._task_manager.add_metric_events(task_id, "context_events", [{
+                "occurred_at": datetime.now(timezone.utc).isoformat(),
+                "kind": "context_output_offloaded",
+                "tool": name,
+                "tool_call_id": call.id,
+                "task_step_id": step.id,
+                "result_ref": prepared.result_ref,
+                "size_bytes": prepared.size_bytes,
+            }])
 
         if result.success:
             self._task_manager.succeed_step(

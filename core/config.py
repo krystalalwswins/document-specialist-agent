@@ -59,6 +59,14 @@ class Settings(BaseSettings):
             raise ValueError("tool output preview must not exceed inline threshold")
         if self.tool_output_read_max_chars > self.tool_output_inline_chars // 2:
             raise ValueError("tool output read limit must not exceed half the inline threshold")
+        if not (
+            self.context_target_tokens
+            < self.context_soft_limit_tokens
+            < self.context_hard_limit_tokens
+        ):
+            raise ValueError("context limits must satisfy target < soft < hard")
+        if self.context_hard_limit_tokens + self.context_output_reserve_tokens > self.context_window_tokens:
+            raise ValueError("context hard limit plus output reserve exceeds model window")
         workspace_path(self.sandbox_workspace, ".", allow_root=True)
         object_key(self.report_prefix, self.report_prefix.rstrip("/") + "/probe")
         object_key(self.input_prefix, self.input_prefix.rstrip("/") + "/probe")
@@ -108,6 +116,18 @@ class Settings(BaseSettings):
     tool_output_inline_chars: int = Field(default=16000, ge=1000)
     tool_output_preview_chars: int = Field(default=2000, ge=100)
     tool_output_read_max_chars: int = Field(default=4000, ge=100)
+
+    # Context input budget. The hard input limit leaves explicit room for the
+    # model's answer; P0-4 compacts at the soft limit and aims for the target.
+    context_window_tokens: int = Field(default=64000, ge=1000)
+    context_output_reserve_tokens: int = Field(default=8000, ge=1)
+    context_soft_limit_tokens: int = Field(default=48000, ge=1)
+    context_hard_limit_tokens: int = Field(default=56000, ge=1)
+    context_target_tokens: int = Field(default=32000, ge=1)
+    context_recent_groups: int = Field(default=2, ge=0)
+    context_summary_max_chars: int = Field(default=6000, ge=500)
+    context_compaction_max_attempts: int = Field(default=2, ge=1)
+    context_compaction_failure_threshold: int = Field(default=2, ge=1)
 
     # Document parsing budget (characters returned to the model per call).
     document_max_chars: int = Field(default=20000, ge=100)
