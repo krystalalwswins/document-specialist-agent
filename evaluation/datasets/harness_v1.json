@@ -1,0 +1,321 @@
+{
+  "id": "document-specialist-harness-core",
+  "version": "1.0.0",
+  "description": "Nine deterministic cases covering the P1-2 Agent Harness evaluation contract.",
+  "cases": [
+    {
+      "id": "document-parsing",
+      "category": "document_parsing",
+      "description": "The Agent chooses the document parser and explicitly completes the parse step.",
+      "user_input": "Parse the staged brief document and summarize its main sections.",
+      "fixture": "document_parse",
+      "input_files": [{"oss_key": "raw/evaluation/brief.docx"}],
+      "expectation": {
+        "tools": ["parse_document"],
+        "completed_steps": ["parse"]
+      },
+      "fake": {
+        "plan": [{
+          "step_id": "parse",
+          "name": "parse document",
+          "description": "extract readable text from the staged document",
+          "tool": "parse_document",
+          "depends_on": [],
+          "completion_criteria": ["document text is available"]
+        }],
+        "tools": [{
+          "name": "parse_document",
+          "retry_safe": true,
+          "outcomes": [{"success": true, "output": "Title: Agent Harness\nSection: Evaluation"}]
+        }],
+        "responses": [
+          {"tool_calls": [{"name": "parse_document", "arguments": {"value": "brief.docx", "plan_step_id": "parse"}}]},
+          {"tool_calls": [{"name": "complete_plan_step", "arguments": {"step_id": "parse", "evidence": "document text extracted"}}]},
+          {"content": "The document describes Agent Harness evaluation."}
+        ]
+      }
+    },
+    {
+      "id": "structured-statistics",
+      "category": "structured_data_statistics",
+      "description": "The Agent uses code execution for deterministic tabular statistics.",
+      "user_input": "Calculate the total and average from the staged sales table.",
+      "fixture": "structured_statistics",
+      "input_files": [{"oss_key": "raw/evaluation/sales.csv"}],
+      "expectation": {
+        "tools": ["run_python"],
+        "completed_steps": ["calculate"]
+      },
+      "fake": {
+        "plan": [{
+          "step_id": "calculate",
+          "name": "calculate statistics",
+          "description": "calculate total and average from structured rows",
+          "tool": "run_python",
+          "depends_on": [],
+          "completion_criteria": ["total and average are observable"]
+        }],
+        "tools": [{
+          "name": "run_python",
+          "outcomes": [{"success": true, "output": "total=60, average=20"}]
+        }],
+        "responses": [
+          {"tool_calls": [{"name": "run_python", "arguments": {"value": "sum and average", "plan_step_id": "calculate"}}]},
+          {"tool_calls": [{"name": "complete_plan_step", "arguments": {"step_id": "calculate", "evidence": "total=60 and average=20"}}]},
+          {"content": "Total is 60 and average is 20."}
+        ]
+      }
+    },
+    {
+      "id": "artifact-generation",
+      "category": "artifact_generation",
+      "description": "The Agent creates a deliverable and the runtime validates it before success.",
+      "user_input": "Create and save a concise analysis report.",
+      "fixture": "artifact_generation",
+      "require_artifact": true,
+      "expectation": {
+        "tools": ["save_report"],
+        "completed_steps": ["save"],
+        "artifact_validation": true,
+        "required_events": {"validation_events": ["artifact_check"]}
+      },
+      "fake": {
+        "plan": [{
+          "step_id": "save",
+          "name": "save report",
+          "description": "persist the final report as a deliverable",
+          "tool": "save_report",
+          "depends_on": [],
+          "completion_criteria": ["validated report artifact exists"]
+        }],
+        "tools": [{
+          "name": "save_report",
+          "outcomes": [{
+            "success": true,
+            "output": "report saved",
+            "metadata": {"kind": "artifact", "oss_key": "reports/evaluation/report.md", "bytes": 18}
+          }]
+        }],
+        "artifact_validation": [true],
+        "responses": [
+          {"tool_calls": [{"name": "save_report", "arguments": {"value": "analysis report", "plan_step_id": "save"}}]},
+          {"tool_calls": [{"name": "complete_plan_step", "arguments": {"step_id": "save", "evidence": "report artifact saved"}}]},
+          {"content": "The report is ready."}
+        ]
+      }
+    },
+    {
+      "id": "missing-data",
+      "category": "missing_data",
+      "description": "The Agent recognizes unavailable input and replans to an explicit limitation report.",
+      "user_input": "Analyze the missing quarterly source and report what can be concluded.",
+      "fixture": "missing_data",
+      "expectation": {
+        "tools": [],
+        "completed_steps": ["report_missing"],
+        "replan": true
+      },
+      "fake": {
+        "plan": [{
+          "step_id": "inspect_source",
+          "name": "inspect source",
+          "description": "locate the required quarterly source",
+          "tool": null,
+          "depends_on": [],
+          "completion_criteria": ["source availability is known"]
+        }],
+        "replans": [[{
+          "step_id": "report_missing",
+          "name": "report missing data",
+          "description": "state the missing source and avoid invented conclusions",
+          "tool": null,
+          "depends_on": [],
+          "completion_criteria": ["missing-data limitation is explicit"]
+        }]],
+        "responses": [
+          {"tool_calls": [{"name": "request_replan", "arguments": {"reason_code": "missing_data", "reason": "the quarterly source is not available"}}]},
+          {"tool_calls": [{"name": "complete_plan_step", "arguments": {"step_id": "report_missing", "evidence": "missing source is disclosed"}}]},
+          {"content": "The source is missing, so no figures are inferred."}
+        ]
+      }
+    },
+    {
+      "id": "tool-parameter-error",
+      "category": "tool_parameter_error",
+      "description": "A schema-invalid Tool Call is observed, then the Agent corrects its arguments.",
+      "user_input": "Parse the brief and recover if the first Tool Call has invalid parameters.",
+      "fixture": "tool_parameter_error",
+      "expectation": {
+        "tools": ["parse_document", "parse_document"],
+        "completed_steps": ["parse"],
+        "failure_recovery": true
+      },
+      "fake": {
+        "plan": [{
+          "step_id": "parse",
+          "name": "parse document",
+          "description": "parse the document with schema-valid parameters",
+          "tool": "parse_document",
+          "depends_on": [],
+          "completion_criteria": ["document text is available"]
+        }],
+        "tools": [{
+          "name": "parse_document",
+          "retry_safe": true,
+          "outcomes": [{"success": true, "output": "corrected parse result"}]
+        }],
+        "responses": [
+          {"tool_calls": [{"name": "parse_document", "arguments": {"wrong": "brief.docx", "plan_step_id": "parse"}}]},
+          {"tool_calls": [{"name": "parse_document", "arguments": {"value": "brief.docx", "plan_step_id": "parse"}}]},
+          {"tool_calls": [{"name": "complete_plan_step", "arguments": {"step_id": "parse", "evidence": "corrected call returned text"}}]},
+          {"content": "The document was parsed after correcting the arguments."}
+        ]
+      }
+    },
+    {
+      "id": "transient-tool-failure",
+      "category": "transient_tool_failure",
+      "description": "A retry-safe tool fails transiently once and succeeds within its bounded retry policy.",
+      "user_input": "Read the input despite one temporary storage failure.",
+      "fixture": "transient_failure",
+      "expectation": {
+        "tools": ["read_file"],
+        "completed_steps": ["read"],
+        "failure_recovery": true
+      },
+      "fake": {
+        "plan": [{
+          "step_id": "read",
+          "name": "read input",
+          "description": "read the input using a retry-safe tool",
+          "tool": "read_file",
+          "depends_on": [],
+          "completion_criteria": ["input content is available"]
+        }],
+        "tools": [{
+          "name": "read_file",
+          "retry_safe": true,
+          "outcomes": [
+            {"success": false, "error": "temporary storage error", "error_type": "TRANSIENT"},
+            {"success": true, "output": "input recovered"}
+          ]
+        }],
+        "responses": [
+          {"tool_calls": [{"name": "read_file", "arguments": {"value": "input.txt", "plan_step_id": "read"}}]},
+          {"tool_calls": [{"name": "complete_plan_step", "arguments": {"step_id": "read", "evidence": "input recovered after retry"}}]},
+          {"content": "Input read successfully."}
+        ]
+      }
+    },
+    {
+      "id": "large-tool-output",
+      "category": "large_tool_output",
+      "description": "A large result is offloaded and the Agent recalls only one bounded page.",
+      "user_input": "Inspect the relevant beginning of a large execution result.",
+      "fixture": "large_output",
+      "expectation": {
+        "tools": ["run_python", "read_tool_output"],
+        "completed_steps": ["inspect"],
+        "required_events": {"context_events": ["context_output_offloaded"]}
+      },
+      "fake": {
+        "plan": [{
+          "step_id": "inspect",
+          "name": "inspect large result",
+          "description": "produce and recall only the needed page of a large result",
+          "tool": "run_python",
+          "depends_on": [],
+          "completion_criteria": ["one bounded result page has been inspected"]
+        }],
+        "tools": [{
+          "name": "run_python",
+          "outcomes": [{
+            "success": true,
+            "output_repeat": {"text": "A", "count": 1200, "suffix": "END"}
+          }]
+        }],
+        "responses": [
+          {"tool_calls": [{"name": "run_python", "arguments": {"value": "produce large output", "plan_step_id": "inspect"}}]},
+          {"tool_calls": [{"name": "read_tool_output", "arguments": {"result_ref": "$last_result_ref", "offset": 0, "limit": 80, "plan_step_id": "inspect"}}]},
+          {"tool_calls": [{"name": "complete_plan_step", "arguments": {"step_id": "inspect", "evidence": "bounded page inspected"}}]},
+          {"content": "The required portion was inspected without loading the full result."}
+        ]
+      }
+    },
+    {
+      "id": "local-replanning",
+      "category": "local_replanning",
+      "description": "An unrecoverable primary tool failure leads to one local replan and a successful fallback.",
+      "user_input": "Analyze the data using an available route when the primary source fails.",
+      "fixture": "local_replanning",
+      "expectation": {
+        "tools": ["read_file", "run_python"],
+        "completed_steps": ["fallback_analysis"],
+        "replan": true,
+        "failure_recovery": true
+      },
+      "fake": {
+        "plan": [{
+          "step_id": "read_primary",
+          "name": "read primary source",
+          "description": "load the primary source",
+          "tool": "read_file",
+          "depends_on": [],
+          "completion_criteria": ["primary data is available"]
+        }],
+        "replans": [[{
+          "step_id": "fallback_analysis",
+          "name": "analyze fallback",
+          "description": "use the available fallback route",
+          "tool": "run_python",
+          "depends_on": [],
+          "completion_criteria": ["fallback analysis is available"]
+        }]],
+        "tools": [
+          {"name": "read_file", "retry_safe": true, "outcomes": [{"success": false, "error": "source missing", "error_type": "BUSINESS"}]},
+          {"name": "run_python", "outcomes": [{"success": true, "output": "fallback result"}]}
+        ],
+        "responses": [
+          {"tool_calls": [{"name": "read_file", "arguments": {"value": "primary.csv", "plan_step_id": "read_primary"}}]},
+          {"tool_calls": [{"name": "request_replan", "arguments": {"reason_code": "tool_failure", "reason": "primary source cannot be read"}}]},
+          {"tool_calls": [{"name": "run_python", "arguments": {"value": "fallback analysis", "plan_step_id": "fallback_analysis"}}]},
+          {"tool_calls": [{"name": "complete_plan_step", "arguments": {"step_id": "fallback_analysis", "evidence": "fallback result produced"}}]},
+          {"content": "Fallback analysis completed."}
+        ]
+      }
+    },
+    {
+      "id": "memory-recall",
+      "category": "memory_recall",
+      "description": "A scoped long-term memory is recalled before planning and remains provenance-labelled.",
+      "user_input": "Prepare the report using my established report preference.",
+      "fixture": "memory_recall",
+      "expectation": {
+        "tools": [],
+        "completed_steps": ["answer"],
+        "required_events": {"memory_events": ["memory_recalled"]}
+      },
+      "fake": {
+        "plan": [{
+          "step_id": "answer",
+          "name": "prepare answer",
+          "description": "apply the recalled reporting preference",
+          "tool": null,
+          "depends_on": [],
+          "completion_criteria": ["answer follows the recalled preference"]
+        }],
+        "memory": {
+          "id": "eval-memory-preference",
+          "type": "PREFERENCE",
+          "content": "Prefer concise reports with bullet points",
+          "source_task_id": "previous-successful-task",
+          "confidence": 0.95
+        },
+        "responses": [
+          {"tool_calls": [{"name": "complete_plan_step", "arguments": {"step_id": "answer", "evidence": "concise bullet format prepared"}}]},
+          {"content": "- Finding one\n- Finding two"}
+        ]
+      }
+    }
+  ]
+}

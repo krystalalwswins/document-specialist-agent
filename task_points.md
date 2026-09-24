@@ -4,7 +4,7 @@
 > 审计分支：`main`  
 > 审计基线：`1a2b7df12258f33e6912cb48f7118d051e38ee2b`  
 > 第 2–5 节保留上述基线的审计快照；后续实现进度以各任务下的执行记录为准。
-> 2026-09-23：P0-1、P0-2 已完成；P0-3、P0-4 已实现并提交验收说明，等待独立测试；P0-5 已补齐端到端场景、等待独立环境执行；P1-1 本地长期记忆已实现、等待独立验收；后续编号尚未开始。
+> 2026-09-24：P0-1、P0-2 已完成；P0-3、P0-4 已实现并提交验收说明，等待独立测试；P0-5 已补齐端到端场景、等待独立环境执行；P1-1 本地长期记忆和 P1-2 独立 Evaluation 已实现并完成分支交付材料；P1-3 及后续编号尚未开始。
 
 ## 1. 最终定位
 
@@ -584,6 +584,32 @@ SQLite MemoryStore。任务以 `user_id/project_id` 形成逻辑作用域，开�
 > P1-1 完成前，项目简介不要写“本地长期记忆已经实现”。
 
 ### P1-2：建立独立 Evaluation
+
+**状态：实现完成，待独立执行（2026-09-24，功能分支 `feat/harness-p1-2`）**
+
+最小实现方案：Evaluation 作为 Agent 主链之外的只读消费者，不修改 Orchestrator、
+Planner、Executor 或 Task 状态。版本化案例仍通过正常 Orchestrator 入口执行，结束后从
+Task、TaskStep、plan_events 和 metrics 读取证据，由确定性 Scorer 计算单案例结果和
+聚合指标，最后生成 JSON 与 Markdown 报告。
+
+完成内容：
+
+- 新增 `evaluation/`，按 model/dataset/runner/scorer/reporter/fake_runtime/cli 拆分职责；
+- `evaluation/datasets/harness_v1.json` 固定九类案例，版本为 `1.0.0`；
+- 工具选择按调用序列评分，避免“调用过正确工具但先走了错误路线”仍得满分；
+- 计划完成只认 `plan_step_completed`，产物只认 `artifact_check`，失败恢复要求先观察到
+  FAILED/RETRYING 证据且最终任务 SUCCESS；
+- 聚合任务完成率、工具选择正确率、计划步骤完成率、产物校验通过率、平均 Tool Call、
+  平均重规划、失败恢复率、平均 Token 和 nearest-rank P95 时延；
+- Fake LLM 只替换模型与外部工具，调用仍经过 Orchestrator、Executor、Registry、重试、
+  大结果 Hook、Memory、Validator 和 TaskManager；
+- Real 模式复用 `build_orchestrator`，必须显式传入 `--allow-external`，报告固定记录模型、
+  Prompt 版本、数据集版本、run_id 与时间；
+- `tests/test_evaluation.py` 提供数据集、轨迹评分、九案例 Harness、报告和 real 安全门的
+  验收资产；学习说明见 `docs/design/12_evaluation_module.md`。
+
+遵照当前任务约定，本轮不执行 pytest、Fake Evaluation、真实模型、Docker 或 MinIO；
+待执行命令和逐项证据见 `docs/verification/08_evaluation.md`，不预填任何 PASS。
 
 **目标**
 
