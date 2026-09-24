@@ -34,6 +34,7 @@ class Settings(BaseSettings):
             "parse_document",
             "save_report",
             "read_tool_output",
+            "search_memory",
         ]
     )
     allowed_permissions: list[str] = Field(
@@ -42,6 +43,7 @@ class Settings(BaseSettings):
             "file.read",
             "artifact.write",
             "tool_output.read",
+            "memory.read",
         ]
     )
     report_prefix: str = "reports"
@@ -128,6 +130,14 @@ class Settings(BaseSettings):
     context_summary_max_chars: int = Field(default=6000, ge=500)
     context_compaction_max_attempts: int = Field(default=2, ge=1)
     context_compaction_failure_threshold: int = Field(default=2, ge=1)
+
+    # Local long-term memory. SQLite is deliberately separate from JSON task
+    # history: memory is cross-task knowledge, while TaskStore is execution audit.
+    memory_enabled: bool = True
+    memory_db_path: str = Field(default=".data/memory/memory.db", min_length=1)
+    memory_recall_top_k: int = Field(default=5, ge=1, le=20)
+    memory_min_confidence: float = Field(default=0.8, ge=0, le=1)
+    memory_max_content_chars: int = Field(default=800, ge=50, le=4000)
 
     # Document parsing budget (characters returned to the model per call).
     document_max_chars: int = Field(default=20000, ge=100)

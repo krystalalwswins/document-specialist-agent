@@ -7,6 +7,7 @@ tested in isolation and serialized to any backend (memory / Redis / DB).
 from __future__ import annotations
 
 import uuid
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -69,6 +70,9 @@ class StepNotFoundError(TaskError):
 
 class TaskStateError(TaskError):
     """Raised when a task/step transition violates the state machine."""
+
+
+_SCOPE_ID = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 
 
 @dataclass
@@ -212,6 +216,10 @@ class Task:
     """A user task with its lifecycle, steps and final result."""
 
     user_input: str
+    # Local identity/project scope for long-term memory. Defaults preserve all
+    # pre-P1 callers and legacy JSON task records.
+    user_id: str = "local-user"
+    project_id: str = "default"
     id: str = field(default_factory=_new_id)
     status: TaskStatus = TaskStatus.CREATED
     steps: list[TaskStep] = field(default_factory=list)
@@ -225,7 +233,7 @@ class Task:
     workspace_dir: Optional[str] = None
     # When true, a run that produces no artifact at all is a failed deliverable.
     require_artifact: bool = False
-    # Forward-looking hook for Phase 2 evaluation (llm_calls, total_tokens, ...).
+    # Runtime event buckets (LLM, retry, context, memory, validation, recovery).
     metrics: dict[str, Any] = field(default_factory=dict)
     created_time: str = field(default_factory=_utc_now_iso)
     updated_time: str = field(default_factory=_utc_now_iso)
@@ -241,6 +249,13 @@ class Task:
         TaskStatus.CREATED: {TaskStatus.RUNNING, TaskStatus.FAILED},
         TaskStatus.RUNNING: {TaskStatus.SUCCESS, TaskStatus.FAILED},
     }
+
+    def __post_init__(self) -> None:
+        for label, value in (("user_id", self.user_id), ("project_id", self.project_id)):
+            if not isinstance(value, str) or not _SCOPE_ID.fullmatch(value):
+                raise ValueError(
+                    f"{label} must be 1-64 characters: letters, digits, dot, dash or underscore"
+                )
 
     def _touch(self) -> None:
         self.updated_time = _utc_now_iso()
@@ -371,6 +386,8 @@ class Task:
         return {
             "id": self.id,
             "user_input": self.user_input,
+            "user_id": self.user_id,
+            "project_id": self.project_id,
             "status": self.status.value,
             "steps": [step.to_dict() for step in self.steps],
             "plan": self.plan.to_dict() if self.plan is not None else None,
@@ -391,6 +408,8 @@ class Task:
         return cls(
             id=data["id"],
             user_input=data["user_input"],
+            user_id=data.get("user_id", "local-user"),
+            project_id=data.get("project_id", "default"),
             status=TaskStatus(data["status"]),
             steps=[TaskStep.from_dict(step) for step in data.get("steps", [])],
             plan=Plan.from_dict(data["plan"]) if data.get("plan") is not None else None,

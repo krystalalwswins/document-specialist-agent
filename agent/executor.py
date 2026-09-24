@@ -134,6 +134,7 @@ class Executor:
         user_input: str,
         plan: Plan,
         repair_hint: str | None = None,
+        memory_context: str | None = None,
     ) -> str:
         """Run the tool-calling loop until the model stops calling tools.
 
@@ -144,7 +145,13 @@ class Executor:
         state = self._plan_state(task_id, plan)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_prompt(state)},
-            {"role": "user", "content": f"Task: {user_input}\n\nPlan:\n{state.plan.summary()}{self._input_context(task_id)}"},
+            {
+                "role": "user",
+                "content": (
+                    f"Task: {user_input}\n\nPlan:\n{state.plan.summary()}"
+                    f"{self._input_context(task_id)}{self._memory_context(memory_context)}"
+                ),
+            },
         ]
         if repair_hint:
             messages.append(
@@ -222,7 +229,13 @@ class Executor:
                     state = self._complete_plan_step(task_id, state, call, messages)
                 elif name == REQUEST_REPLAN:
                     state, replans_used = self._replan(
-                        task_id, user_input, state, call, messages, replans_used
+                        task_id,
+                        user_input,
+                        state,
+                        call,
+                        messages,
+                        replans_used,
+                        memory_context,
                     )
                 else:
                     state = self._run_tool_call(task_id, state, call, messages)
@@ -522,6 +535,7 @@ class Executor:
         call: Any,
         messages: list[dict[str, Any]],
         replans_used: int,
+        memory_context: str | None,
     ) -> tuple[PlanRunState, int]:
         arguments = self._parse_arguments(call)
         reason_code = arguments.get("reason_code") if isinstance(arguments, dict) else None
@@ -562,15 +576,16 @@ class Executor:
             "remaining_step_ids": state.unfinished_ids(),
         })
         try:
-            new_plan = self._planner.replan(
-                user_input,
-                state.plan,
-                completed_steps=self._completed_step_records(state),
-                observations=state.failure_observations(),
-                available_tools=[
+            replan_arguments = {
+                "completed_steps": self._completed_step_records(state),
+                "observations": state.failure_observations(),
+                "available_tools": [
                     schema["function"]["name"] for schema in self._registry.to_openai_tools()
                 ],
-            )
+            }
+            if memory_context:
+                replan_arguments["memory_context"] = memory_context
+            new_plan = self._planner.replan(user_input, state.plan, **replan_arguments)
             self._task_manager.replace_plan(
                 task_id, new_plan, reason_code=reason_code, reason=reason
             )
@@ -658,6 +673,12 @@ class Executor:
             parts.append(f"Input files already staged there:\n{lines}")
         parts.append(f"Write every output inside {task.workspace_dir} as well.")
         return "\n".join(parts)
+
+    @staticmethod
+    def _memory_context(memory_context: str | None) -> str:
+        if not memory_context:
+            return ""
+        return f"\n\n{memory_context}"
 
     def _invoke_tool(
         self, task_id: str, name: str, arguments: Any,

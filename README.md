@@ -17,6 +17,7 @@
 - **可追踪**：任务与步骤两级状态、工具调用、重试、校验、恢复事件全部留痕；
 - **有执行限制**：代码只在容器沙箱内执行，受超时、资源、工具白名单与路径白名单约束；
 - **能处理异常**：瞬态故障按指数退避重试，产物不符则重新生成，进程重启后回收僵死任务；
+- **能跨任务复用经验**：长期记忆按用户和项目保存在本地 SQLite，经过来源校验后才写入；
 - **交付产物**：结果落盘到对象存储，返回有时效的下载链接。
 
 典型任务："沙箱里有一份 sales.xlsx，按区域汇总收入，把结果存成 reports/q3_summary.xlsx 并给我下载链接。"
@@ -59,6 +60,10 @@
 
 **一次任务的时序**：提交 → 建任务 → 装载输入 → 规划 → 多轮工具调用（沙箱执行）→ 产物校验 → 成功/失败 → 下载链接。
 
+长期记忆位于这条主链的两端：任务开始时按 `user_id/project_id` 召回并注入 Planner、
+Executor；任务成功后才执行候选提取、规则过滤、去重和 SQLite 写入。执行中还可通过
+`search_memory` 做一次受作用域约束的二次召回。
+
 ---
 
 ## 3. 核心能力
@@ -76,7 +81,21 @@
 - **完整消息组压缩**：只将较早的 `assistant tool_calls + 对应 tool results` 完整组交给独立压缩调用，绝不拆散调用与结果；结构化摘要保留任务目标、当前计划、确认事实、未完成事项和全部 `result_ref`。
 - **压缩熔断**：压缩请求超长或响应非法时，按完整组移除最早历史后有限重试；连续失败打开熔断器，后续改用确定性整组裁剪，仍超过 hard limit 才明确终止任务。
 - **终止控制**：`max_iterations` 限制单次执行的轮数；单步失败不中断，错误交回模型决定换路。
-- **可观测**：每次 LLM 调用、工具调用和上下文决策都写入任务指标（`llm_events` / `retry_events` / `context_events`）。
+- **可观测**：每次 LLM 调用、工具调用、上下文决策和记忆读写都写入任务指标（`llm_events` / `retry_events` / `context_events` / `memory_events`）。
+
+### 本地长期记忆
+
+- **四类记忆**：用户明确偏好、项目固定约束、已确认业务事实、成功验证的处理经验；
+  每条记录包含 `source_task_id`、来源类型、证据摘录、置信度、状态和时间。
+- **保守写入**：模型只负责提出候选；Runtime 再检查来源原文、类型与来源是否匹配、
+  置信度、长度和敏感信息。推测、凭证和无证据内容不会落库。
+- **可解释召回**：SQLite 先按 `user_id/project_id/status/type` 过滤，再在本地按关键词
+  重合、短语命中、记忆类型和置信度计算 Top-K；当前不使用 Embedding 或向量数据库。
+- **作用域隔离**：模型不能提供 user/project 参数；`search_memory` 根据当前 task_id
+  从 TaskManager 获取作用域，避免跨任务串线。
+- **生命周期**：重复内容不重复写入；记忆可失效或软删除，非 ACTIVE 记录不再注入。
+  当前用户输入与历史记忆冲突时，以当前输入为准。
+- **失败隔离**：召回或写入失败只产生 `memory_events`，不会把已成功的文档任务改成失败。
 
 ### 任务生命周期
 
@@ -98,6 +117,7 @@
   | `parse_document` | PDF / Excel / PPTX / DOCX / CSV / JSON → Markdown |
   | `save_report` | 沙箱文件 → 对象存储 → 预签名下载链接 |
   | `read_tool_output` | 按逻辑引用分页回读被卸载的大型工具结果 |
+  | `search_memory` | 在当前用户/项目作用域内按关键词二次召回长期记忆 |
 
 ### 隔离与安全
 
@@ -138,6 +158,7 @@ document-specialist-agent/
 ├── storage/          # 对象存储封装（MinIO / S3 兼容）
 ├── retry/            # 错误分类 + 重试策略
 ├── context/          # 大结果卸载、Token 估算、消息分组、摘要压缩与熔断
+├── memory/           # SQLite Store、候选提取、写入策略、关键词召回与注入
 ├── demo/             # 端到端与离线演示脚本
 ├── docs/design/      # 各模块设计笔记
 └── tests/            # 离线单元/集成测试（fake LLM / SDK / S3）
@@ -185,6 +206,9 @@ Copy-Item .env.example .env
 | `POST /tasks` | 提交任务，立即返回任务（`CREATED`）；队列满返回 **429** |
 | `GET /tasks/{id}` | 查询状态、步骤、产物、指标事件；不存在返回 404 |
 | `GET /tasks` | 列出全部任务 |
+| `GET /memories` | 按 user/project/status 查看本地记忆 |
+| `POST /memories/{id}/invalidate` | 将当前作用域的一条记忆标记为失效 |
+| `DELETE /memories/{id}` | 软删除当前作用域的一条记忆 |
 | `GET /health` | 服务状态与 worker 池统计 |
 
 请求体（`POST /tasks`）：
@@ -192,6 +216,8 @@ Copy-Item .env.example .env
 ```json
 {
   "user_input": "读取 sales.xlsx，按区域汇总收入，保存为 reports/q3_summary.xlsx",
+  "user_id": "local-user",
+  "project_id": "sales-analysis",
   "input_files": [{"oss_key": "raw/sales.xlsx", "filename": "sales.xlsx"}],
   "require_artifact": true
 }
@@ -199,6 +225,7 @@ Copy-Item .env.example .env
 
 - `input_files`：先把对象从存储装载进沙箱，并把沙箱内的绝对路径告诉模型（可选）。
 - `require_artifact`：要求任务必须产出可下载产物（可选，默认 false）。
+- `user_id/project_id`：本地记忆的逻辑作用域，不是登录身份或多租户鉴权声明。
 
 调用示例（设置了 `API_TOKEN` 时需带请求头）：
 
@@ -225,8 +252,8 @@ curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
 | 沙箱 | `SANDBOX_API_KEY` | 空 | 沙箱鉴权头；为空则沙箱 API 完全开放 |
 | 沙箱 | `SANDBOX_DEFAULT_TIMEOUT` / `SANDBOX_MAX_TIMEOUT` | `30` / `120` | 代码执行默认与最大超时（秒） |
 | 沙箱 | `SANDBOX_CPUS` / `SANDBOX_MEMORY` / `SANDBOX_PIDS_LIMIT` | `2.0` / `4g` / `512` | 容器配额（compose 使用） |
-| 权限 | `ALLOWED_TOOLS` | 五个内置工具 | 工具白名单（JSON 数组） |
-| 权限 | `ALLOWED_PERMISSIONS` | 含 `tool_output.read` | 权限白名单 |
+| 权限 | `ALLOWED_TOOLS` | 六个内置工具 | 工具白名单（JSON 数组） |
+| 权限 | `ALLOWED_PERMISSIONS` | 含 `tool_output.read` / `memory.read` | 权限白名单 |
 | 权限 | `REPORT_PREFIX` / `INPUT_PREFIX` | `reports` / `raw` | 产物对象前缀 / 输入对象前缀 |
 | 存储 | `MINIO_ENDPOINT` | `http://localhost:9000` | 对象存储地址 |
 | 存储 | `MINIO_PUBLIC_ENDPOINT` | 空 | 生成下载链接用的对外地址 |
@@ -237,6 +264,9 @@ curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
 | 上下文 | `CONTEXT_TARGET_TOKENS` / `CONTEXT_SOFT_LIMIT_TOKENS` / `CONTEXT_HARD_LIMIT_TOKENS` | `32000` / `48000` / `56000` | 压缩目标、触发阈值与输入硬上限 |
 | 上下文 | `CONTEXT_WINDOW_TOKENS` / `CONTEXT_OUTPUT_RESERVE_TOKENS` | `64000` / `8000` | 模型窗口与回答预留空间 |
 | 上下文 | `CONTEXT_RECENT_GROUPS` | `2` | 优先保留的最近完整消息组数量 |
+| 记忆 | `MEMORY_ENABLED` / `MEMORY_DB_PATH` | `true` / `.data/memory/memory.db` | 是否启用本地长期记忆及 SQLite 文件位置 |
+| 记忆 | `MEMORY_RECALL_TOP_K` / `MEMORY_MIN_CONFIDENCE` | `5` / `0.8` | 初始召回数量与候选写入置信度门槛 |
+| 记忆 | `MEMORY_MAX_CONTENT_CHARS` | `800` | 单条长期记忆的最大字符数 |
 | 任务 | `TASK_STORE_DIR` | `.data/tasks` | 任务落盘目录 |
 | 任务 | `TASK_STALE_AFTER_SECONDS` / `TASK_REAPER_INTERVAL_SECONDS` | `1800` / `60` | 僵死判定阈值与巡检间隔 |
 | 任务 | `TASK_MAX_WORKERS` / `TASK_MAX_PENDING` | `2` / `32` | 并发 worker 数与可排队数 |
@@ -250,6 +280,7 @@ curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
 
 ```powershell
 .venv\Scripts\python.exe -m pytest -q tests/test_harness_v1_scenarios.py
+.venv\Scripts\python.exe -m pytest -q tests/test_memory_store.py tests/test_memory_policy.py tests/test_memory_service.py tests/test_memory_prompting.py tests/test_memory_extractor.py tests/test_orchestrator_memory.py tests/test_memory_api.py
 .venv\Scripts\python.exe -m pytest -q
 ```
 
@@ -271,6 +302,8 @@ README 不固化易过期的 passed 数量；当前版本的环境、commit、�
 - **沙箱是单容器共享内核**：文件层面已按任务隔离，但代码执行仍共用同一个容器；要做强隔离或真正并行，需要一任务一容器或沙箱池。
 - **任务存储是单进程文件存储**：多 worker 部署需要换成 Redis 等共享存储。
 - **无多租户**：没有账号体系，`GET /tasks` 返回该实例的全部任务。
+- **记忆作用域不是鉴权边界**：`user_id/project_id` 用于本地数据分组，API 调用者仍由
+  `API_TOKEN` 统一保护；当前关键词召回可解释但不理解同义词，语义召回属于后续增强。
 - **有 Token 用量轨迹，尚无价格成本换算**：模型返回 usage 时会记录
   prompt/completion/total tokens 并用于后续上下文估算校准；当前未维护供应商单价表，
   因此不计算货币成本。
@@ -284,3 +317,5 @@ README 不固化易过期的 passed 数量；当前版本的环境、commit、�
 - `docs/design/01_task_module.md` ~ `10_security_module.md`：各模块设计笔记（统一 10 小节模板）。
 - `docs/verification/01_security.md`：安全模块的验证记录（含未验证边界）。
 - `docs/verification/06_harness_v1.md`：Harness V1 证据矩阵与当前回归/真实环境验证记录。
+- `docs/design/11_memory_module.md`：本地长期记忆的写入、召回、隔离与失败边界。
+- `docs/verification/07_local_memory.md`：P1-1 验收矩阵与待执行命令。

@@ -58,6 +58,8 @@ class Planner:
         self,
         user_input: str,
         on_event: Optional[Callable[[dict[str, Any]], None]] = None,
+        *,
+        memory_context: str | None = None,
     ) -> Plan:
         messages = [
             {
@@ -70,7 +72,10 @@ class Planner:
                     "describing observable evidence of completion. Dependencies must be acyclic."
                 ),
             },
-            {"role": "user", "content": user_input},
+            {
+                "role": "user",
+                "content": user_input + self._memory_block(memory_context),
+            },
         ]
         response = self._llm.chat(
             messages,
@@ -91,6 +96,7 @@ class Planner:
         completed_steps: list[dict[str, Any]],
         observations: list[dict[str, Any]],
         available_tools: list[str],
+        memory_context: str | None = None,
         on_event: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> Plan:
         """Produce the next plan version when reality no longer matches the plan.
@@ -123,6 +129,7 @@ class Planner:
                     "Observations that triggered this replan:\n"
                     f"{json.dumps(observations, ensure_ascii=False, indent=2)}\n\n"
                     f"Available tools: {', '.join(available_tools) or '(none)'}"
+                    f"{self._memory_block(memory_context)}"
                 ),
             },
         ]
@@ -140,6 +147,12 @@ class Planner:
             return new_plan
         except (ValueError, TypeError, KeyError, IndexError, AttributeError, ValidationError) as exc:
             raise PlannerError(f"invalid plan: {exc}") from exc
+
+    @staticmethod
+    def _memory_block(memory_context: str | None) -> str:
+        if not memory_context:
+            return ""
+        return f"\n\n{memory_context}"
 
     @staticmethod
     def _parse_plan_response(response: Any, user_input: str, version: int) -> Plan:

@@ -4,7 +4,7 @@
 > 审计分支：`main`  
 > 审计基线：`1a2b7df12258f33e6912cb48f7118d051e38ee2b`  
 > 第 2–5 节保留上述基线的审计快照；后续实现进度以各任务下的执行记录为准。
-> 2026-09-18：P0-1、P0-2 已完成；P0-3、P0-4 已实现并提交验收说明，等待独立测试；P0-5 已补齐端到端 Fake LLM 场景和验证记录模板，等待独立环境执行；后续编号尚未开始。
+> 2026-09-23：P0-1、P0-2 已完成；P0-3、P0-4 已实现并提交验收说明，等待独立测试；P0-5 已补齐端到端场景、等待独立环境执行；P1-1 本地长期记忆已实现、等待独立验收；后续编号尚未开始。
 
 ## 1. 最终定位
 
@@ -526,6 +526,34 @@ P0-3。
 ## P1：补充 Harness 的学习价值和效果证明
 
 ### P1-1：本地长期记忆（不做向量化）
+
+**状态：实现完成，待独立验收（2026-09-23，功能分支 `feat/harness-p1-1`）**
+
+最小实现方案：保持 Task 轨迹继续使用 JSON 文件，不迁移现有存储；新增独立的
+SQLite MemoryStore。任务以 `user_id/project_id` 形成逻辑作用域，开始前执行作用域
+过滤与关键词 Top-K 召回，将带来源的记忆上下文同时注入 Planner 和 Executor；执行中
+可通过 `search_memory` 二次召回。任务成功后才调用结构化 `extract_memories`，模型只
+提出候选，Runtime 再做证据原文匹配、类型/来源约束、置信度、长度、敏感信息和去重
+校验，合格记录才写入 SQLite。
+
+完成内容：
+
+- `memory/`：MemoryRecord/Candidate、SQLite Store、Extractor、Policy、Service；
+- 记忆包含 user/project/type/content/source_task_id/source_kind/source_excerpt/
+  confidence/status/created_at/updated_at/invalidated_at；
+- 四类记忆固定为 PREFERENCE、CONSTRAINT、BUSINESS_FACT、PROCEDURE；
+- user/project/status/type 先过滤，Python 关键词与短语规则再进行可解释 Top-K 排序；
+- PREFERENCE/CONSTRAINT 只能来自用户明确表达，PROCEDURE 只能来自成功工具输出或
+  已确认产物记录，证据必须能在声明来源中找到；模型自行提交的完成声明不算验证来源；
+- 凭证、低置信度、超长内容、无证据推测被拒绝；同作用域同类型同内容只保留一条；
+- `search_memory` 的 task_id 由 Registry 注入，模型不能伪造 user/project 作用域；
+- API 支持列出、失效和软删除；只有 ACTIVE 记忆参与召回；
+- 记忆召回/写入为 best-effort，异常写入 `memory_events`，不破坏主任务结果；
+- 旧 Task JSON 缺少 user_id/project_id 时兼容为 local-user/default。
+
+本轮继续遵照此前约定，不运行 pytest、真实 LLM、Docker 或 MinIO。待执行测试与回填
+格式见 [`docs/verification/07_local_memory.md`](docs/verification/07_local_memory.md)。
+设计与学习说明见 [`docs/design/11_memory_module.md`](docs/design/11_memory_module.md)。
 
 **目标**
 

@@ -15,7 +15,7 @@ import threading
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from agent.orchestrator import AgentOrchestrator
@@ -24,6 +24,8 @@ from api.workers import QueueFull, TaskWorkerPool
 from core.config import Settings, get_settings
 from task.task_manager import TaskManager
 from task.task_model import TaskNotFoundError
+from memory.model import MemoryStatus
+from memory.store import MemoryNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,9 @@ class TaskInputFile(BaseModel):
 
 class CreateTaskRequest(BaseModel):
     user_input: str = Field(min_length=1)
+    # Local memory scope. These are identifiers, not authentication claims.
+    user_id: str = Field(default="local-user", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+    project_id: str = Field(default="default", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
     # Object-storage keys to load into the sandbox before the task runs.
     # Example: [{"oss_key": "raw/sales.xlsx"}]
     input_files: list[TaskInputFile] = Field(default_factory=list)
@@ -127,12 +132,20 @@ def create_app(
 
     app = FastAPI(title="Document Specialist Agent", lifespan=lifespan)
 
+    def memory_service():
+        service = getattr(orchestrator, "memory_service", None)
+        if service is None:
+            raise HTTPException(status_code=503, detail="local memory is disabled")
+        return service
+
     @app.post("/tasks", status_code=201, dependencies=[guard])
     def create_task(request: CreateTaskRequest):
         task = orchestrator.task_manager.create_task(
             request.user_input,
             input_files=[item.model_dump() for item in request.input_files],
             require_artifact=request.require_artifact,
+            user_id=request.user_id,
+            project_id=request.project_id,
         )
         try:
             pool.submit(task.id)
@@ -155,6 +168,57 @@ def create_app(
     @app.get("/tasks", dependencies=[guard])
     def list_tasks():
         return [task.to_dict() for task in orchestrator.task_manager.list_tasks()]
+
+    @app.get("/memories", dependencies=[guard])
+    def list_memories(
+        user_id: str = Query(
+            default="local-user", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+        ),
+        project_id: str = Query(
+            default="default", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+        ),
+        status: MemoryStatus = MemoryStatus.ACTIVE,
+    ):
+        return [
+            item.to_dict()
+            for item in memory_service().list(
+                user_id=user_id, project_id=project_id, status=status
+            )
+        ]
+
+    @app.post("/memories/{memory_id}/invalidate", dependencies=[guard])
+    def invalidate_memory(
+        memory_id: str,
+        user_id: str = Query(
+            default="local-user", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+        ),
+        project_id: str = Query(
+            default="default", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+        ),
+    ):
+        try:
+            return memory_service().invalidate(
+                memory_id, user_id=user_id, project_id=project_id
+            ).to_dict()
+        except MemoryNotFoundError:
+            raise HTTPException(status_code=404, detail="memory not found")
+
+    @app.delete("/memories/{memory_id}", dependencies=[guard])
+    def delete_memory(
+        memory_id: str,
+        user_id: str = Query(
+            default="local-user", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+        ),
+        project_id: str = Query(
+            default="default", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+        ),
+    ):
+        try:
+            return memory_service().delete(
+                memory_id, user_id=user_id, project_id=project_id
+            ).to_dict()
+        except MemoryNotFoundError:
+            raise HTTPException(status_code=404, detail="memory not found")
 
     @app.get("/health", dependencies=[guard])
     def health():

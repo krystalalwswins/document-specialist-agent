@@ -88,7 +88,14 @@ def test_default_allowlist_exposes_every_registered_tool():
     orchestrator = build_orchestrator(Settings(_env_file=None))
     schemas = orchestrator._executor._registry.to_openai_tools()
     names = [schema["function"]["name"] for schema in schemas]
-    assert names == ["run_python", "read_file", "parse_document", "save_report"]
+    assert names == [
+        "run_python",
+        "read_file",
+        "parse_document",
+        "save_report",
+        "read_tool_output",
+        "search_memory",
+    ]
     assert names == orchestrator._executor._registry.names()
 
 

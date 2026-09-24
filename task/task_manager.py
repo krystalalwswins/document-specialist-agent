@@ -99,9 +99,13 @@ class TaskManager:
         user_input: str,
         input_files: Optional[list[dict[str, Any]]] = None,
         require_artifact: bool = False,
+        user_id: str = "local-user",
+        project_id: str = "default",
     ) -> Task:
         task = Task(
             user_input=user_input,
+            user_id=user_id,
+            project_id=project_id,
             input_files=list(input_files or []),
             require_artifact=require_artifact,
         )
