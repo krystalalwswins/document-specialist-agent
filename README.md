@@ -23,6 +23,30 @@
 
 典型任务："沙箱里有一份 sales.xlsx，按区域汇总收入，把结果存成 reports/q3_summary.xlsx 并给我下载链接。"
 
+### 当前能力总览
+
+当前 `main` 已合入 P0-1～P1-3，Agent Harness 具备以下能力：
+
+| 能力 | 当前实现 |
+| --- | --- |
+| 结构化规划 | Planner 生成带步骤 ID、依赖关系和完成条件的 DAG 计划，Runtime 校验并持久化版本 |
+| 受计划约束的执行 | Tool Call 绑定计划步骤，只调度依赖已满足的步骤，并用证据判定完成 |
+| 局部重规划 | 保留已完成步骤，只替换未完成部分；限制重规划次数并记录完整事件 |
+| 多轮 Tool Calling | Executor 驱动“模型决策 → 工具执行 → 结果回注 → 再决策”的 Agent Loop |
+| 工具治理 | 可插拔 Registry、JSON Schema 校验、权限白名单、任务级参数重写和统一结果封装 |
+| 大结果治理 | 统一卸载大型工具结果，以随机 `result_ref` 在当前任务内分页回读 |
+| 上下文治理 | Token 估算、完整消息组压缩、关键信息保护、失败重试、熔断和确定性裁剪 |
+| 安全执行 | Docker Sandbox、资源限制、任务目录隔离、路径/对象前缀校验和 API Token |
+| 产物交付 | 输入装载、对象存储、产物存在性与大小校验、预签名下载链接及有限修复 |
+| 状态与恢复 | Task/TaskStep 状态机、JSON 原子落盘、有界 worker、僵死任务回收和错误分类重试 |
+| 本地长期记忆 | SQLite 持久化、用户/项目作用域、策略过滤、去重、关键词 Top-K 和按需召回 |
+| 独立 Evaluation | 版本化数据集、Fake/Real 运行模式、轨迹评分及 JSON/Markdown 报告 |
+| 资源计量与预算 | 按任务/阶段/轮次统计 Token 和时延，估算费用，并用 soft/hard budget 控制任务 |
+
+> 这里的“具备”表示代码与配套学习/验证资产已经进入 `main`，不等同于所有能力都已在
+> 当前环境完成独立回归或真实 Docker/LLM 验证。实际验证状态以
+> [`docs/verification/`](docs/verification/) 下各编号记录为准。
+
 ---
 
 ## 2. 架构
@@ -198,6 +222,7 @@ document-specialist-agent/
 ├── context/          # 大结果卸载、Token 估算、消息分组、摘要压缩与熔断
 ├── memory/           # SQLite Store、候选提取、写入策略、关键词召回与注入
 ├── evaluation/       # 版本化案例、Runner、轨迹评分、Fake/Real 适配与报告
+├── metering/         # Token/时延聚合、版本化价格表与任务级预算控制
 ├── demo/             # 端到端与离线演示脚本
 ├── docs/design/      # 各模块设计笔记
 └── tests/            # 离线单元/集成测试（fake LLM / SDK / S3）
@@ -227,7 +252,8 @@ Copy-Item .env.example .env
 .venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8000
 ```
 
-可选演示脚本（前三个离线，`run_demo` 与 `security_smoke` 需要 Docker + LLM Key）：
+可选演示脚本（`retry_demo`、`security_demo` 可离线运行；`run_demo` 与
+`security_smoke` 需要对应的 Docker/外部依赖）：
 
 ```powershell
 .venv\Scripts\python.exe -m demo.run_demo        # CSV → OSS → 沙箱 → Agent → 产物链接
