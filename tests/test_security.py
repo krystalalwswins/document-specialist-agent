@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from agent.executor import Executor, UnsafeExecutionStateError
 from agent.orchestrator import AgentOrchestrator
-from agent.planner import Plan
+from agent.planner import Plan, PlanStep
 from core.config import Settings
 from retry.retry_policy import RetryPolicy, classify_exception
 from sandbox.client import PATH_GUARD, SandboxExecutionUncertain
@@ -88,7 +88,14 @@ def test_default_allowlist_exposes_every_registered_tool():
     orchestrator = build_orchestrator(Settings(_env_file=None))
     schemas = orchestrator._executor._registry.to_openai_tools()
     names = [schema["function"]["name"] for schema in schemas]
-    assert names == ["run_python", "read_file", "parse_document", "save_report"]
+    assert names == [
+        "run_python",
+        "read_file",
+        "parse_document",
+        "save_report",
+        "read_tool_output",
+        "search_memory",
+    ]
     assert names == orchestrator._executor._registry.names()
 
 
@@ -153,6 +160,14 @@ def call(name, arguments, call_id="c1"):
     return SimpleNamespace(id=call_id, function=SimpleNamespace(name=name, arguments=arguments))
 
 
+def plan_for(user_input):
+    """A valid single-step contract: the executor rejects an invalid plan outright."""
+    return Plan(user_input=user_input, steps=[PlanStep(
+        step_id="security_probe", name="security probe", description="exercise the tool boundary",
+        depends_on=[], completion_criteria=["The boundary behaved as asserted"],
+    )])
+
+
 def run_loop(tool, arguments='{"text":"hi"}', permissions=None, extra_calls=None):
     registry = ToolRegistry(permissions)
     registry.register(tool)
@@ -168,7 +183,7 @@ def run_loop(tool, arguments='{"text":"hi"}', permissions=None, extra_calls=None
 def test_bad_arguments_return_feedback_without_execution(arguments):
     tool = CountingTool()
     task, llm, executor = run_loop(tool, arguments)
-    assert executor.run(task.id, task.user_input, Plan(task.user_input)) == "done"
+    assert executor.run(task.id, task.user_input, plan_for(task.user_input)) == "done"
     assert tool.calls == 0
     assert task.metrics["retry_events"][0]["error_type"] == "INVALID_ARGUMENT"
     feedback = llm.requests[1][-1]
@@ -179,7 +194,7 @@ def test_denied_tool_hidden_and_not_executed_but_audited():
     tool = CountingTool()
     permissions = PermissionManager(allowed_tools=frozenset())
     task, llm, executor = run_loop(tool, permissions=permissions)
-    executor.run(task.id, task.user_input, Plan(task.user_input))
+    executor.run(task.id, task.user_input, plan_for(task.user_input))
     assert tool.calls == 0
     assert executor._registry.to_openai_tools() == []
     event = task.metrics["security_events"][0]
@@ -190,7 +205,7 @@ def test_denied_tool_hidden_and_not_executed_but_audited():
 
 def test_registered_tool_needs_no_executor_changes():
     task, llm, executor = run_loop(CountingTool())
-    assert executor.run(task.id, task.user_input, Plan(task.user_input)) == "done"
+    assert executor.run(task.id, task.user_input, plan_for(task.user_input)) == "done"
     assert executor._registry.to_openai_tools()[0]["function"]["name"] == "count"
 
 
@@ -215,7 +230,7 @@ def test_actual_exceptions_are_not_retried(exc, expected):
     tool = CountingTool(exc)
     tool.retry_safe = True
     task, _, executor = run_loop(tool)
-    executor.run(task.id, task.user_input, Plan(task.user_input))
+    executor.run(task.id, task.user_input, plan_for(task.user_input))
     assert tool.calls == 1
     assert task.metrics["retry_events"][0]["error_type"] == expected.value
 
@@ -232,7 +247,7 @@ def test_replay_requires_explicit_safety(retry_safe, attempts):
     tool = CountingTool(ConnectionError("down"))
     tool.retry_safe = retry_safe
     task, _, executor = run_loop(tool)
-    executor.run(task.id, task.user_input, Plan(task.user_input))
+    executor.run(task.id, task.user_input, plan_for(task.user_input))
     assert tool.calls == attempts
     assert len(task.metrics["retry_events"]) == attempts
 
@@ -246,7 +261,7 @@ def test_event_written_before_next_attempt():
         assert len(task.metrics.get("retry_events", [])) == tool.calls
         return original(**kwargs)
     tool.execute = execute
-    executor.run(task.id, task.user_input, Plan(task.user_input))
+    executor.run(task.id, task.user_input, plan_for(task.user_input))
 
 
 def test_default_timeout_and_fresh_session_cleanup():
@@ -274,7 +289,7 @@ def test_timeout_stops_loop_and_cleans_session():
     sdk.jupyter.response = SimpleNamespace(data=SimpleNamespace(status="timeout", outputs=[]))
     task, llm, executor = run_loop(SandboxTool(client), '{"code":"while True: pass"}', extra_calls=[call("run_python", '{"code":"print(2)"}', "c2")])
     with pytest.raises(UnsafeExecutionStateError):
-        executor.run(task.id, task.user_input, Plan(task.user_input))
+        executor.run(task.id, task.user_input, plan_for(task.user_input))
     assert len(sdk.jupyter.calls) == 1 and len(llm.requests) == 1
     assert sdk.jupyter.deleted == sdk.jupyter.created
     assert task.steps[0].status.value == "FAILED"

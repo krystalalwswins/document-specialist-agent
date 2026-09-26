@@ -58,3 +58,39 @@ def test_llm_retry_window_is_validated():
 def test_task_store_dir_must_not_be_empty():
     with pytest.raises(ValidationError):
         Settings(_env_file=None, task_store_dir="")
+
+
+def test_task_token_budget_requires_soft_below_hard():
+    with pytest.raises(ValidationError, match="soft < hard"):
+        Settings(
+            _env_file=None,
+            task_soft_token_budget=100,
+            task_hard_token_budget=100,
+        )
+
+
+def test_pricing_configuration_is_all_or_none():
+    with pytest.raises(ValidationError, match="pricing requires"):
+        Settings(
+            _env_file=None,
+            llm_pricing_version="provider-2026-09",
+            llm_input_price_usd_per_million=1,
+        )
+
+    settings = Settings(
+        _env_file=None,
+        llm_pricing_version="provider-2026-09",
+        llm_input_price_usd_per_million=1,
+        llm_cached_input_price_usd_per_million=0.1,
+        llm_output_price_usd_per_million=2,
+    )
+    assert settings.llm_pricing_version == "provider-2026-09"
+
+    with pytest.raises(ValidationError, match="pricing requires"):
+        Settings(
+            _env_file=None,
+            llm_pricing_version="   ",
+            llm_input_price_usd_per_million=1,
+            llm_cached_input_price_usd_per_million=0.1,
+            llm_output_price_usd_per_million=2,
+        )

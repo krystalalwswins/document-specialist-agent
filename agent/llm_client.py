@@ -116,9 +116,18 @@ class LLMClient:
 
             self._emit(
                 on_event,
-                self._event(
-                    attempt, None, None, "success", int((time.monotonic() - started) * 1000), "SUCCESS"
-                ),
+                {
+                    **self._event(
+                        attempt,
+                        None,
+                        None,
+                        "success",
+                        int((time.monotonic() - started) * 1000),
+                        "SUCCESS",
+                    ),
+                    "model": getattr(response, "model", None) or self.model,
+                    **self._usage_fields(response),
+                },
             )
             return response
 
@@ -150,3 +159,40 @@ class LLMClient:
             on_event(event)
         except Exception:  # observability must never break the call itself
             logger.exception("LLM event sink failed")
+
+    @staticmethod
+    def _usage_fields(response: Any) -> dict[str, Any]:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return {}
+        if isinstance(usage, dict):
+            get_value = usage.get
+        else:
+            get_value = lambda name: getattr(usage, name, None)
+        fields: dict[str, Any] = {
+            "prompt_tokens": get_value("prompt_tokens"),
+            "completion_tokens": get_value("completion_tokens"),
+            "total_tokens": get_value("total_tokens"),
+        }
+        details = get_value("prompt_tokens_details")
+        if isinstance(details, dict):
+            detail_cached = details.get("cached_tokens")
+        else:
+            detail_cached = getattr(details, "cached_tokens", None)
+        cache_candidates = (
+            get_value("cache_tokens"),
+            get_value("cached_tokens"),
+            get_value("prompt_cache_hit_tokens"),
+            detail_cached,
+        )
+        fields["cache_tokens"] = next(
+            (value for value in cache_candidates if value is not None), None
+        )
+        if fields["total_tokens"] is None and (
+            fields["prompt_tokens"] is not None
+            and fields["completion_tokens"] is not None
+        ):
+            fields["total_tokens"] = (
+                fields["prompt_tokens"] + fields["completion_tokens"]
+            )
+        return {key: value for key, value in fields.items() if value is not None}

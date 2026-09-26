@@ -4,7 +4,7 @@
 > 审计分支：`main`  
 > 审计基线：`1a2b7df12258f33e6912cb48f7118d051e38ee2b`  
 > 第 2–5 节保留上述基线的审计快照；后续实现进度以各任务下的执行记录为准。
-> 2026-09-18：P0-1 已完成，P0-2 及后续编号尚未开始。
+> 2026-09-26：P0-1、P0-2 已完成；P0-3、P0-4 已实现并提交验收说明，等待独立测试；P0-5 已补齐端到端场景、等待独立环境执行；P1-1 本地长期记忆、P1-2 独立 Evaluation 和 P1-3 Token/时延/成本计量已实现并完成分支交付材料；P2 及后续编号尚未开始。
 
 ## 1. 最终定位
 
@@ -231,6 +231,48 @@ Planner 校验模型响应，Orchestrator 在 Executor 之前调用 `TaskManager
 
 ### P0-2：绑定执行步骤并实现局部重规划
 
+**状态：已完成（2026-09-18，基于 `7d97c34f5febda1b9a42fef2e127349f353f2160`）**
+
+最小修改方案：沿用既有 ReAct 循环、工具注册表和计划落盘，只补一层计划运行时。
+新增纯计算的 `task/plan_state.py`（由 append-only 事件派生步骤状态与可调度集合）；
+`TaskStep` 增加 `plan_step_id`/`tool_call_id`，`Task` 增加 `plan_events` 与
+`apply_replan`；Executor 给工具 schema 注入必填 `plan_step_id`（调用前剥离），
+在循环内拦截两个运行时控制调用 `complete_plan_step` 与 `request_replan`，
+并给 Planner 增加 `replan`。不重写循环，不新增工具、权限或存储后端。
+
+实际修改：`task/plan_state.py`（新增）、`task/plan_model.py`、
+`task/task_model.py`、`task/task_manager.py`、`agent/executor.py`、
+`agent/planner.py`、`agent/orchestrator.py`、`agent/wiring.py`，以及对应测试、
+README 和验证文档。未改动 `tools/`、`security/`、`retry/`、`core/config.py`、`api/`。
+
+完成内容：
+
+- 每个 Tool Call 记录 `plan_step_id` 与 `tool_call_id`；绑定事件带版本与是否隐式绑定；
+- 只调度依赖已完成的计划步骤：违规绑定不执行工具、不产生 `TaskStep`，只回注观察；
+- 已完成步骤不可重放，`Task.apply_replan` 还要求它们在版本 +1 中逐字段不变；
+- 步骤完成由 `completion_criteria` 证据判定（`complete_plan_step`），
+  工具返回 success 不再等于业务步骤完成；
+- 局部重规划只在工具不可恢复失败、必要数据缺失、完成条件未满足、
+  原计划依赖失效四类原因码下由模型请求，输入包含目标、当前计划、
+  已完成步骤+证据、失败观察和可用工具；
+- 工具错误只作为观察回注，不会无条件触发重规划；
+- 新计划版本 +1，保留已完成步骤，只替换未完成部分；
+- `max_replans` 预算（Executor 构造参数，默认 2）耗尽后抛
+  `ReplanBudgetExceededError`，任务明确失败；
+- `plan_events` 记录创建、绑定、完成、失败、重规划请求/拒绝/应用/耗尽与收尾，
+  随任务 JSON 落盘，重启后经 `GET /tasks/{id}` 可查。
+
+验收证据：新用例先在旧代码上得到 2 个模块导入失败 + 14 项失败；实现后相关测试
+214 passed（1 skipped）；完整 `python -m pytest -q` **323 passed，1 skipped**
+（基线 275 passed / 1 skipped，Windows 11 / Python 3.13.2 / pytest 9.1.1）。
+本轮未调用真实 LLM、Docker 或 MinIO；`docs/verification/01_security.md` 作为历史快照未改动。
+
+调用链：`Executor.run → PlanRunState(plan, plan_events) → 工具 schema 注入
+plan_step_id → 绑定门禁 → ToolRegistry.execute → 观察回注 /
+complete_plan_step → plan_step_completed / request_replan → Planner.replan →
+TaskManager.replace_plan → FileTaskStore`。完整学习说明与验收记录见
+[`docs/verification/03_execution_binding.md`](docs/verification/03_execution_binding.md)。
+
 **目标**
 
 让 Executor 清楚“当前正在完成哪个计划步骤”，并在现实观察与初始计划脱节时进行有边界的局部重规划。
@@ -271,6 +313,39 @@ P0-1。
 
 ### P0-3：实现通用工具大结果卸载与二次回读
 
+**状态：实现完成，待独立验收（2026-09-18，功能分支 `feat/harness-p0-3`）**
+
+最小修改方案：保留既有 Tool Registry 与 ReAct 循环，在工具真实执行完成后、
+任务步骤落盘和 Tool Result 回注模型之前加入统一 `AfterToolCallHook`。小结果沿用
+原始行为；超过字符阈值的结果原子写入本地 `ToolOutputStore`，TaskStep 与模型消息
+只接收带预览和逻辑引用的有界观察。新增 `read_tool_output` 工具按字符 offset/limit
+分页回读，由 Registry 注入当前 `task_id`，模型不能提交任务 ID 或文件路径。
+
+实际修改：新增 `context/tool_output_store.py`、`context/hooks.py`、
+`tools/tool_output_tool.py`；修改 `agent/executor.py`、`agent/wiring.py`、
+`tools/base_tool.py`、`tools/tool_registry.py`、`task/task_model.py`、
+`task/task_manager.py`、`core/config.py`、`.env.example` 与 README。
+
+完成内容：
+
+- 128 位随机 `result_ref`，仅允许固定格式的逻辑引用，不接受路径；
+- 结果按 `<store>/<task_id>/<result_ref>.json` 原子落盘，重启后仍可读取；
+- 大结果回注只含 preview、result_ref、字节数、字符数、内容类型和回读提示；
+- TaskStep 增加引用、大小、内容类型和截断标记，兼容旧任务 JSON；
+- Registry 为需要任务上下文的工具注入 task_id，未绑定任务的调用直接拒绝；
+- `read_tool_output` 单页上限由配置固定，返回 next_offset 指引后续读取；
+- 引用格式、任务命名空间和实际记录三重校验，跨任务读取返回稳定拒绝原因；
+- Hook/存储失败采取 fail-closed：步骤失败且原始大结果不进入任务 JSON 或模型消息。
+- retry event 的错误文本设置固定上限，避免大错误绕过 Hook 膨胀任务轨迹。
+
+本轮遵照任务要求未运行 pytest、真实 LLM、Docker 或 MinIO。待执行的测试矩阵、
+预期断言与建议命令见
+[`docs/verification/04_tool_output_offload.md`](docs/verification/04_tool_output_offload.md)。
+
+调用链：`ToolRegistry.execute → ToolResult → AfterToolCallHook → 小结果原样回注 /
+大结果写 ToolOutputStore → TaskStep 保存预览+result_ref → LLM 调用
+read_tool_output → Registry 注入 task_id → 限量分页回读 → Hook → LLM`。
+
 **目标**
 
 任何工具的大结果都不能直接撑爆模型上下文。
@@ -308,6 +383,43 @@ P0-1。
 - 回读仍受单次字符/Token 预算限制，不能一次重新塞回全部内容。
 
 ### P0-4：实现上下文预算、完整消息组压缩与熔断
+
+**状态：实现完成，待独立验收（2026-09-18，功能分支 `feat/harness-p0-4`）**
+
+最小修改方案：不改变 P0-2 的计划运行时和 P0-3 的 Tool Result Hook，仅在每轮
+Executor 主模型调用之前增加 `ContextManager.prepare`。上下文先经 TokenEstimator
+估算；超过 soft limit 后，以完整消息组为单位将较早历史交给 ContextCompactor；
+压缩失败按完整组有限缩小请求，连续失败打开任务内熔断器并切换到确定性整组裁剪；
+裁剪后仍超过 hard limit 才抛出明确异常。每个 run 使用独立 ContextSession，避免
+并发任务共享熔断状态。
+
+实际修改：新增 `context/token_estimator.py`、`context/message_groups.py`、
+`context/compactor.py`、`context/manager.py`；修改 `agent/executor.py`、
+`agent/llm_client.py`、`agent/wiring.py`、`core/config.py`、`.env.example`、README。
+
+完成内容：
+
+- 每轮调用前估算完整 messages 与工具 Schema，摘要和 result_ref 同样计入；
+- 真实 provider `prompt_tokens` 形成移动校准值，可选 tiktoken 次之，中英文字符折算兜底；
+- target < soft < hard，且 hard + output reserve 不得超过模型窗口；
+- `assistant.tool_calls` 与其全部 `role=tool` 结果组成不可拆分的原子消息组；
+- 压缩使用强制 `compact_context` Function Calling 和结构化 Schema；
+- Runtime 强制覆盖摘要中的原始目标、当前计划、完成/未完成步骤，并合并全部 result_ref；
+- 压缩调用自身失败时移除最早完整组后有限重试，不产生递归或无限模型调用；
+- 连续失败达到阈值后打开任务级熔断器，之后只执行确定性整组裁剪；
+- 确定性摘要保留目标、活动计划、未完成步骤、确认事实、错误和结果引用；
+- 上下文仍超过 hard limit 时抛 `context_hard_limit_exceeded`，由现有任务生命周期收口失败；
+- `context_events` 记录估算、大结果卸载、压缩、重试、熔断、裁剪、usage 校准和最终大小；
+- LLM 成功事件补充 prompt/completion/total tokens，供后续成本统计复用。
+
+本轮遵照任务要求未运行 pytest、真实 LLM、Docker 或 MinIO。待执行的测试矩阵、
+预期断言与建议命令见
+[`docs/verification/05_context_budget.md`](docs/verification/05_context_budget.md)。
+
+调用链：`Executor iteration → 刷新 System Prompt → ContextManager.prepare →
+TokenEstimator → 未超 soft 直接调用 / 超限后完整组压缩 → ContextCompactor →
+有限重试 → 熔断后确定性裁剪 → hard limit 门禁 → 主 LLM 调用 → usage 校准 →
+assistant/tool 消息继续进入下一轮`。
 
 **目标**
 
@@ -354,6 +466,22 @@ P0-3。
 
 ### P0-5：补齐 Harness V1 回归测试和真实验证记录
 
+**状态：测试与验证材料已实现，待独立执行（2026-09-18，功能分支 `feat/harness-p0-5`）**
+
+本轮新增 `tests/test_harness_v1_scenarios.py`，通过统一的
+`AgentOrchestrator.run` 入口覆盖静态计划、失败换路、局部重规划、大结果卸载与
+分页回读、上下文压缩、压缩熔断、最大执行轮数和最大重规划次数八条场景。Fake LLM
+只替代模型提供方，测试仍经过 Planner、Executor、Tool Registry 与 TaskManager，
+避免把多个孤立单元测试误称为端到端 Harness 证据。
+
+新增 [`docs/verification/06_harness_v1.md`](docs/verification/06_harness_v1.md)，
+建立“简历关键词 → 代码位置 → 测试证据”追踪矩阵，并为 commit、环境、完整 pytest、
+真实 Docker `security_smoke`、timeout probe 和安全边界预留逐项记录位置。
+
+遵照当前任务授权，本轮不运行测试、Docker、真实 LLM 或 MinIO；因此 P0-5 不能标为
+完全完成，也不预填任何 PASS。独立验收全部通过并回填原始输出后，再按验证文档第 7 节
+收口 P0。
+
 **目标**
 
 让每一条核心简历描述都有代码位置和测试证据。
@@ -399,6 +527,34 @@ P0-3。
 
 ### P1-1：本地长期记忆（不做向量化）
 
+**状态：实现完成，待独立验收（2026-09-23，功能分支 `feat/harness-p1-1`）**
+
+最小实现方案：保持 Task 轨迹继续使用 JSON 文件，不迁移现有存储；新增独立的
+SQLite MemoryStore。任务以 `user_id/project_id` 形成逻辑作用域，开始前执行作用域
+过滤与关键词 Top-K 召回，将带来源的记忆上下文同时注入 Planner 和 Executor；执行中
+可通过 `search_memory` 二次召回。任务成功后才调用结构化 `extract_memories`，模型只
+提出候选，Runtime 再做证据原文匹配、类型/来源约束、置信度、长度、敏感信息和去重
+校验，合格记录才写入 SQLite。
+
+完成内容：
+
+- `memory/`：MemoryRecord/Candidate、SQLite Store、Extractor、Policy、Service；
+- 记忆包含 user/project/type/content/source_task_id/source_kind/source_excerpt/
+  confidence/status/created_at/updated_at/invalidated_at；
+- 四类记忆固定为 PREFERENCE、CONSTRAINT、BUSINESS_FACT、PROCEDURE；
+- user/project/status/type 先过滤，Python 关键词与短语规则再进行可解释 Top-K 排序；
+- PREFERENCE/CONSTRAINT 只能来自用户明确表达，PROCEDURE 只能来自成功工具输出或
+  已确认产物记录，证据必须能在声明来源中找到；模型自行提交的完成声明不算验证来源；
+- 凭证、低置信度、超长内容、无证据推测被拒绝；同作用域同类型同内容只保留一条；
+- `search_memory` 的 task_id 由 Registry 注入，模型不能伪造 user/project 作用域；
+- API 支持列出、失效和软删除；只有 ACTIVE 记忆参与召回；
+- 记忆召回/写入为 best-effort，异常写入 `memory_events`，不破坏主任务结果；
+- 旧 Task JSON 缺少 user_id/project_id 时兼容为 local-user/default。
+
+本轮继续遵照此前约定，不运行 pytest、真实 LLM、Docker 或 MinIO。待执行测试与回填
+格式见 [`docs/verification/07_local_memory.md`](docs/verification/07_local_memory.md)。
+设计与学习说明见 [`docs/design/11_memory_module.md`](docs/design/11_memory_module.md)。
+
 **目标**
 
 实现可解释、低复杂度的跨任务记忆，不引入 PostgreSQL 和向量数据库。
@@ -428,6 +584,32 @@ P0-3。
 > P1-1 完成前，项目简介不要写“本地长期记忆已经实现”。
 
 ### P1-2：建立独立 Evaluation
+
+**状态：实现完成，待独立执行（2026-09-24，功能分支 `feat/harness-p1-2`）**
+
+最小实现方案：Evaluation 作为 Agent 主链之外的只读消费者，不修改 Orchestrator、
+Planner、Executor 或 Task 状态。版本化案例仍通过正常 Orchestrator 入口执行，结束后从
+Task、TaskStep、plan_events 和 metrics 读取证据，由确定性 Scorer 计算单案例结果和
+聚合指标，最后生成 JSON 与 Markdown 报告。
+
+完成内容：
+
+- 新增 `evaluation/`，按 model/dataset/runner/scorer/reporter/fake_runtime/cli 拆分职责；
+- `evaluation/datasets/harness_v1.json` 固定九类案例，版本为 `1.0.0`；
+- 工具选择按调用序列评分，避免“调用过正确工具但先走了错误路线”仍得满分；
+- 计划完成只认 `plan_step_completed`，产物只认 `artifact_check`，失败恢复要求先观察到
+  FAILED/RETRYING 证据且最终任务 SUCCESS；
+- 聚合任务完成率、工具选择正确率、计划步骤完成率、产物校验通过率、平均 Tool Call、
+  平均重规划、失败恢复率、平均 Token 和 nearest-rank P95 时延；
+- Fake LLM 只替换模型与外部工具，调用仍经过 Orchestrator、Executor、Registry、重试、
+  大结果 Hook、Memory、Validator 和 TaskManager；
+- Real 模式复用 `build_orchestrator`，必须显式传入 `--allow-external`，报告固定记录模型、
+  Prompt 版本、数据集版本、run_id 与时间；
+- `tests/test_evaluation.py` 提供数据集、轨迹评分、九案例 Harness、报告和 real 安全门的
+  验收资产；学习说明见 `docs/design/12_evaluation_module.md`。
+
+遵照当前任务约定，本轮不执行 pytest、Fake Evaluation、真实模型、Docker 或 MinIO；
+待执行命令和逐项证据见 `docs/verification/08_evaluation.md`，不预填任何 PASS。
 
 **目标**
 
@@ -459,6 +641,32 @@ P0-3。
 - Fake LLM 用于确定性回归；真实模型评测单独运行并保留模型名、Prompt 版本和数据集版本。
 
 ### P1-3：Token、时延和成本计量
+
+**状态：实现完成，待独立执行（2026-09-26，功能分支 `feat/harness-p1-3`）**
+
+最小实现方案：保留 `llm_events` 作为追加式原始证据，新增独立 `metering/` 从这些事件
+生成可重算的 `metrics.usage`，避免把聚合结果当成另一份事实源。所有模型调用按 task、
+phase 和 `phase:iteration` 聚合；本地价格表显式记录版本，未配置价格时只统计 Token，
+不虚构费用。核心 Agent Loop 使用累计 soft/hard budget，soft 只要求上下文收敛，hard
+才终止任务。
+
+完成内容：
+
+- `LLMClient` 统一提取 prompt/completion/total/cache tokens，并优先记录响应实际模型；
+- `UsageMeter` 聚合 attempts、成功响应、失败尝试、usage 缺失、Token、时延与估算费用；
+- phase 覆盖 plan、replan、context_compaction、execute、memory_capture，iteration 使用
+  `phase:iteration` 防止不同阶段的轮次串在一起；
+- `PricingCatalog` 将普通输入、缓存输入和输出分开计价，价格版本和模型随快照留存；
+- 未配置价格、未知模型或成功响应缺 usage 时 `estimated_cost_usd=null`，而不是错误写 0；
+- soft budget 触发 `context_budget_forced`，复用 P0-4 的完整消息组压缩/确定性裁剪链路；
+- hard budget 在规划、压缩、执行和重规划响应后检查，越界响应不再进入下一步决策；
+- 成功后的 memory_capture 仍纳入总用量和成本，但不消耗已经结束的核心 Agent Loop 预算；
+- 配置校验保证 soft < hard，价格版本和三档单价必须全有或全无；
+- 验收资产见 `tests/test_metering.py`、`tests/test_llm_client.py`、`tests/test_config.py`；
+  学习说明见 `docs/design/13_metering_and_budget.md`。
+
+遵照当前任务约定，本轮不执行 pytest、Fake Evaluation、真实模型、Docker 或 MinIO；
+待执行命令和逐项证据见 `docs/verification/09_metering_budget.md`，不预填任何 PASS。
 
 **目标**
 

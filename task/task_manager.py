@@ -99,9 +99,13 @@ class TaskManager:
         user_input: str,
         input_files: Optional[list[dict[str, Any]]] = None,
         require_artifact: bool = False,
+        user_id: str = "local-user",
+        project_id: str = "default",
     ) -> Task:
         task = Task(
             user_input=user_input,
+            user_id=user_id,
+            project_id=project_id,
             input_files=list(input_files or []),
             require_artifact=require_artifact,
         )
@@ -142,10 +146,17 @@ class TaskManager:
             self._store.update(task)
         return task
 
-    def add_step(self, task_id: str, name: str, tool: Optional[str] = None) -> TaskStep:
+    def add_step(
+        self,
+        task_id: str,
+        name: str,
+        tool: Optional[str] = None,
+        plan_step_id: Optional[str] = None,
+        tool_call_id: Optional[str] = None,
+    ) -> TaskStep:
         with self._lock:
             task = self._store.get(task_id)
-            step = task.add_step(name, tool)
+            step = task.add_step(name, tool, plan_step_id, tool_call_id)
             self._store.update(task)
         return step
 
@@ -158,20 +169,50 @@ class TaskManager:
         return step
 
     def succeed_step(
-        self, task_id: str, step_id: str, output: Optional[str] = None
+        self,
+        task_id: str,
+        step_id: str,
+        output: Optional[str] = None,
+        *,
+        result_ref: Optional[str] = None,
+        result_size_bytes: Optional[int] = None,
+        result_content_type: Optional[str] = None,
+        result_truncated: bool = False,
     ) -> TaskStep:
         with self._lock:
             task = self._store.get(task_id)
             step = task.get_step(step_id)
-            step.succeed(output)
+            step.succeed(
+                output,
+                result_ref=result_ref,
+                result_size_bytes=result_size_bytes,
+                result_content_type=result_content_type,
+                result_truncated=result_truncated,
+            )
             self._store.update(task)
         return step
 
-    def fail_step(self, task_id: str, step_id: str, error: str) -> TaskStep:
+    def fail_step(
+        self,
+        task_id: str,
+        step_id: str,
+        error: str,
+        *,
+        result_ref: Optional[str] = None,
+        result_size_bytes: Optional[int] = None,
+        result_content_type: Optional[str] = None,
+        result_truncated: bool = False,
+    ) -> TaskStep:
         with self._lock:
             task = self._store.get(task_id)
             step = task.get_step(step_id)
-            step.fail(error)
+            step.fail(
+                error,
+                result_ref=result_ref,
+                result_size_bytes=result_size_bytes,
+                result_content_type=result_content_type,
+                result_truncated=result_truncated,
+            )
             self._store.update(task)
         return step
 
@@ -187,6 +228,31 @@ class TaskManager:
             task = self._store.get(task_id)
             task.metrics.setdefault(key, []).extend(events)
             self._store.update(task)
+
+    def set_metric(self, task_id: str, key: str, value: Any) -> None:
+        """Replace one derived metric snapshot without rewriting append-only events."""
+        with self._lock:
+            task = self._store.get(task_id)
+            task.metrics[key] = value
+            self._store.update(task)
+
+    def add_plan_events(self, task_id: str, events: list[dict[str, Any]]) -> None:
+        """Append plan lifecycle events (binding, completion, failure, replan)."""
+        with self._lock:
+            task = self._store.get(task_id)
+            for event in events:
+                task.add_plan_event(event)
+            self._store.update(task)
+
+    def replace_plan(
+        self, task_id: str, plan: Plan, *, reason_code: str, reason: str
+    ) -> Task:
+        """Apply a locally replanned version; completed steps must survive verbatim."""
+        with self._lock:
+            task = self._store.get(task_id)
+            task.apply_replan(plan, reason_code=reason_code, reason=reason)
+            self._store.update(task)
+        return task
 
     def set_input_files(self, task_id: str, input_files: list[dict[str, Any]]) -> None:
         with self._lock:

@@ -127,6 +127,44 @@ def test_failing_event_sink_does_not_break_the_call():
     assert client.chat([{"role": "user", "content": "hi"}], on_event=sink) is response
 
 
+def test_usage_normalizes_openai_cached_tokens_and_response_model():
+    response = SimpleNamespace(
+        id="ok",
+        model="provider-resolved-model",
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=20,
+            total_tokens=120,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=40),
+        ),
+    )
+    client, _ = _client([response])
+    events = []
+
+    client.chat([{"role": "user", "content": "hi"}], on_event=events.append)
+
+    assert events[-1]["model"] == "provider-resolved-model"
+    assert events[-1]["cache_tokens"] == 40
+
+
+def test_usage_normalizes_deepseek_cache_hits_and_derives_total():
+    response = SimpleNamespace(
+        id="ok",
+        usage={
+            "prompt_tokens": 70,
+            "completion_tokens": 30,
+            "prompt_cache_hit_tokens": 25,
+        },
+    )
+    client, _ = _client([response])
+    events = []
+
+    client.chat([{"role": "user", "content": "hi"}], on_event=events.append)
+
+    assert events[-1]["cache_tokens"] == 25
+    assert events[-1]["total_tokens"] == 100
+
+
 def test_client_is_built_with_explicit_timeout_and_no_hidden_retries(monkeypatch):
     captured = {}
 

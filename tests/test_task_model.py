@@ -125,11 +125,15 @@ def test_from_dict_tolerates_records_written_before_these_fields_existed():
     data = Task(user_input="x").to_dict()
     data.pop("input_files")
     data.pop("artifacts")
+    data.pop("user_id")
+    data.pop("project_id")
 
     restored = Task.from_dict(data)
 
     assert restored.input_files == []
     assert restored.artifacts == []
+    assert restored.user_id == "local-user"
+    assert restored.project_id == "default"
 
 
 def test_failing_before_start_is_allowed_but_succeeding_is_not():
