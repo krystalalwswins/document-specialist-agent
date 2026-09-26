@@ -7,6 +7,7 @@ globals: it is cached, and importing this module has no side effects.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -69,6 +70,19 @@ class Settings(BaseSettings):
             raise ValueError("context limits must satisfy target < soft < hard")
         if self.context_hard_limit_tokens + self.context_output_reserve_tokens > self.context_window_tokens:
             raise ValueError("context hard limit plus output reserve exceeds model window")
+        if self.task_soft_token_budget >= self.task_hard_token_budget:
+            raise ValueError("task token budget must satisfy soft < hard")
+        pricing = (
+            self.llm_input_price_usd_per_million,
+            self.llm_cached_input_price_usd_per_million,
+            self.llm_output_price_usd_per_million,
+        )
+        pricing_version = self.llm_pricing_version.strip()
+        if pricing_version or any(rate is not None for rate in pricing):
+            if not pricing_version or any(rate is None for rate in pricing):
+                raise ValueError(
+                    "LLM pricing requires version plus input, cached-input and output rates"
+                )
         workspace_path(self.sandbox_workspace, ".", allow_root=True)
         object_key(self.report_prefix, self.report_prefix.rstrip("/") + "/probe")
         object_key(self.input_prefix, self.input_prefix.rstrip("/") + "/probe")
@@ -98,6 +112,12 @@ class Settings(BaseSettings):
     llm_max_attempts: int = Field(default=3, ge=1)
     llm_retry_base_delay: float = Field(default=1.0, ge=0)
     llm_retry_max_delay: float = Field(default=10.0, ge=0)
+    # Optional, versioned local estimate. Prices change independently of code, so
+    # there is deliberately no baked-in provider price that can silently go stale.
+    llm_pricing_version: str = ""
+    llm_input_price_usd_per_million: Decimal | None = Field(default=None, ge=0)
+    llm_cached_input_price_usd_per_million: Decimal | None = Field(default=None, ge=0)
+    llm_output_price_usd_per_million: Decimal | None = Field(default=None, ge=0)
 
     # Task persistence + stale-run recovery (a process restart must not lose history).
     task_store_dir: str = Field(default=".data/tasks", min_length=1)
@@ -111,6 +131,10 @@ class Settings(BaseSettings):
     task_max_pending: int = Field(default=32, ge=0)
     # How many extra attempts a task gets after artifact validation fails.
     task_max_recovery_attempts: int = Field(default=1, ge=0)
+    # Cumulative tokens in plan/replan/compaction/execute phases. The soft limit
+    # asks ContextManager to converge; the hard limit terminates core execution.
+    task_soft_token_budget: int = Field(default=200000, ge=1)
+    task_hard_token_budget: int = Field(default=300000, ge=2)
 
     # Large tool outputs stay local and are recalled through opaque, task-bound
     # references. These limits are character budgets; P0-4 adds token budgeting.

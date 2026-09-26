@@ -84,6 +84,7 @@ class ContextManager:
         *,
         on_context_event: ContextEventHandler | None = None,
         on_llm_event: ContextEventHandler | None = None,
+        force_compaction: bool = False,
     ) -> list[dict[str, Any]]:
         """Return a safe prompt before one main-model call."""
         if session.summary is not None:
@@ -106,7 +107,14 @@ class ContextManager:
             hard_limit=self._hard_limit,
             target_tokens=self._target_tokens,
         )
-        if initial.tokens <= self._soft_limit:
+        if force_compaction:
+            self._emit(
+                on_context_event,
+                "context_budget_forced",
+                tokens=initial.tokens,
+                reason="task_soft_token_budget",
+            )
+        if initial.tokens <= self._soft_limit and not force_compaction:
             self._emit_final(on_context_event, initial, action="none")
             return current
 

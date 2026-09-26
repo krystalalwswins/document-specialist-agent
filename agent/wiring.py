@@ -17,6 +17,9 @@ from memory.extractor import MemoryExtractor
 from memory.policy import MemoryPolicy
 from memory.service import MemoryService
 from memory.store import SQLiteMemoryStore
+from metering.budget import BudgetController, TokenBudgetPolicy
+from metering.meter import UsageMeter
+from metering.pricing import PricingCatalog
 from sandbox.client import SandboxClient
 from sandbox.inputs import InputStager
 from storage.storage_manager import StorageManager
@@ -39,6 +42,15 @@ def build_orchestrator(settings: Settings | None = None) -> AgentOrchestrator:
     storage = StorageManager(settings)
     task_manager = TaskManager(FileTaskStore(settings.task_store_dir))
     llm = LLMClient(settings)
+    usage_meter = UsageMeter(task_manager, PricingCatalog.from_settings(settings))
+    budget_controller = BudgetController(
+        task_manager,
+        usage_meter,
+        TokenBudgetPolicy(
+            soft_tokens=settings.task_soft_token_budget,
+            hard_tokens=settings.task_hard_token_budget,
+        ),
+    )
 
     memory_service = None
     if settings.memory_enabled:
@@ -96,6 +108,8 @@ def build_orchestrator(settings: Settings | None = None) -> AgentOrchestrator:
         planner=planner,
         after_tool_call=after_tool_call,
         context_manager=context_manager,
+        usage_meter=usage_meter,
+        budget_controller=budget_controller,
     )
     return AgentOrchestrator(
         task_manager,
@@ -105,4 +119,6 @@ def build_orchestrator(settings: Settings | None = None) -> AgentOrchestrator:
         validator=ArtifactValidator(storage),
         max_recovery_attempts=settings.task_max_recovery_attempts,
         memory_service=memory_service,
+        usage_meter=usage_meter,
+        budget_controller=budget_controller,
     )

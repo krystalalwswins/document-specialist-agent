@@ -18,6 +18,8 @@ from agent.llm_client import LLMClient
 from agent.planner import Plan, Planner, PlannerError
 from context.hooks import AfterToolCallHook, PreparedToolOutput
 from context.manager import ContextManager, ContextSnapshot
+from metering.budget import BudgetController
+from metering.meter import UsageMeter
 from retry.retry_policy import RetryDecision, RetryPolicy, classify_exception
 from task.plan_model import PlanValidationError
 from task.plan_state import PlanRunState
@@ -116,6 +118,8 @@ class Executor:
         max_replans: int = 2,
         after_tool_call: AfterToolCallHook | None = None,
         context_manager: ContextManager | None = None,
+        usage_meter: UsageMeter | None = None,
+        budget_controller: BudgetController | None = None,
     ) -> None:
         self._llm = llm
         self._registry = registry
@@ -127,6 +131,8 @@ class Executor:
         self._max_replans = max_replans
         self._after_tool_call = after_tool_call
         self._context_manager = context_manager
+        self._usage_meter = usage_meter
+        self._budget_controller = budget_controller
 
     def run(
         self,
@@ -171,6 +177,13 @@ class Executor:
         )
         replans_used = 0
         for iteration in range(1, self._max_iterations + 1):
+            force_compaction = (
+                self._budget_controller.before_call(
+                    task_id, phase="execute", iteration=iteration
+                )
+                if self._budget_controller is not None
+                else False
+            )
             # Re-render instead of appending: the model always sees live progress,
             # and the message history does not grow with a status line per round.
             messages[0] = {"role": "system", "content": self._system_prompt(state)}
@@ -190,20 +203,26 @@ class Executor:
                         unfinished_work=state.unfinished_ids(),
                     ),
                     on_context_event=context_sink,
-                    on_llm_event=self._task_manager.metric_sink(
-                        task_id,
-                        "llm_events",
-                        phase="context_compaction",
-                        iteration=iteration,
+                    on_llm_event=self._llm_sink(
+                        task_id, phase="context_compaction", iteration=iteration
                     ),
+                    force_compaction=force_compaction,
                 )
+                if self._budget_controller is not None:
+                    self._budget_controller.after_call(
+                        task_id, phase="context_compaction", iteration=iteration
+                    )
             response = self._llm.chat(
                 messages,
                 tools=tool_schemas,
-                on_event=self._task_manager.metric_sink(
-                    task_id, "llm_events", phase="execute", iteration=iteration
+                on_event=self._llm_sink(
+                    task_id, phase="execute", iteration=iteration
                 ),
             )
+            if self._budget_controller is not None:
+                self._budget_controller.after_call(
+                    task_id, phase="execute", iteration=iteration
+                )
             if self._context_manager is not None:
                 self._context_manager.observe_response(
                     messages,
@@ -236,11 +255,24 @@ class Executor:
                         messages,
                         replans_used,
                         memory_context,
+                        iteration,
                     )
                 else:
                     state = self._run_tool_call(task_id, state, call, messages)
 
         raise MaxIterationsError(f"exceeded {self._max_iterations} tool-calling iterations")
+
+    def _llm_sink(
+        self, task_id: str, *, phase: str, iteration: int | None = None
+    ):
+        if self._usage_meter is not None:
+            return self._usage_meter.event_sink(
+                task_id, phase=phase, iteration=iteration
+            )
+        context: dict[str, Any] = {"phase": phase}
+        if iteration is not None:
+            context["iteration"] = iteration
+        return self._task_manager.metric_sink(task_id, "llm_events", **context)
 
     # --- plan runtime ---------------------------------------------------------
 
@@ -536,6 +568,7 @@ class Executor:
         messages: list[dict[str, Any]],
         replans_used: int,
         memory_context: str | None,
+        iteration: int,
     ) -> tuple[PlanRunState, int]:
         arguments = self._parse_arguments(call)
         reason_code = arguments.get("reason_code") if isinstance(arguments, dict) else None
@@ -585,7 +618,14 @@ class Executor:
             }
             if memory_context:
                 replan_arguments["memory_context"] = memory_context
+            replan_arguments["on_event"] = self._llm_sink(
+                task_id, phase="replan", iteration=iteration
+            )
             new_plan = self._planner.replan(user_input, state.plan, **replan_arguments)
+            if self._budget_controller is not None:
+                self._budget_controller.after_call(
+                    task_id, phase="replan", iteration=iteration
+                )
             self._task_manager.replace_plan(
                 task_id, new_plan, reason_code=reason_code, reason=reason
             )

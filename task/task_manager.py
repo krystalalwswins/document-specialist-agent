@@ -229,6 +229,13 @@ class TaskManager:
             task.metrics.setdefault(key, []).extend(events)
             self._store.update(task)
 
+    def set_metric(self, task_id: str, key: str, value: Any) -> None:
+        """Replace one derived metric snapshot without rewriting append-only events."""
+        with self._lock:
+            task = self._store.get(task_id)
+            task.metrics[key] = value
+            self._store.update(task)
+
     def add_plan_events(self, task_id: str, events: list[dict[str, Any]]) -> None:
         """Append plan lifecycle events (binding, completion, failure, replan)."""
         with self._lock:

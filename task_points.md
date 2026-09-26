@@ -4,7 +4,7 @@
 > 审计分支：`main`  
 > 审计基线：`1a2b7df12258f33e6912cb48f7118d051e38ee2b`  
 > 第 2–5 节保留上述基线的审计快照；后续实现进度以各任务下的执行记录为准。
-> 2026-09-24：P0-1、P0-2 已完成；P0-3、P0-4 已实现并提交验收说明，等待独立测试；P0-5 已补齐端到端场景、等待独立环境执行；P1-1 本地长期记忆和 P1-2 独立 Evaluation 已实现并完成分支交付材料；P1-3 及后续编号尚未开始。
+> 2026-09-26：P0-1、P0-2 已完成；P0-3、P0-4 已实现并提交验收说明，等待独立测试；P0-5 已补齐端到端场景、等待独立环境执行；P1-1 本地长期记忆、P1-2 独立 Evaluation 和 P1-3 Token/时延/成本计量已实现并完成分支交付材料；P2 及后续编号尚未开始。
 
 ## 1. 最终定位
 
@@ -641,6 +641,32 @@ Task、TaskStep、plan_events 和 metrics 读取证据，由确定性 Scorer 计
 - Fake LLM 用于确定性回归；真实模型评测单独运行并保留模型名、Prompt 版本和数据集版本。
 
 ### P1-3：Token、时延和成本计量
+
+**状态：实现完成，待独立执行（2026-09-26，功能分支 `feat/harness-p1-3`）**
+
+最小实现方案：保留 `llm_events` 作为追加式原始证据，新增独立 `metering/` 从这些事件
+生成可重算的 `metrics.usage`，避免把聚合结果当成另一份事实源。所有模型调用按 task、
+phase 和 `phase:iteration` 聚合；本地价格表显式记录版本，未配置价格时只统计 Token，
+不虚构费用。核心 Agent Loop 使用累计 soft/hard budget，soft 只要求上下文收敛，hard
+才终止任务。
+
+完成内容：
+
+- `LLMClient` 统一提取 prompt/completion/total/cache tokens，并优先记录响应实际模型；
+- `UsageMeter` 聚合 attempts、成功响应、失败尝试、usage 缺失、Token、时延与估算费用；
+- phase 覆盖 plan、replan、context_compaction、execute、memory_capture，iteration 使用
+  `phase:iteration` 防止不同阶段的轮次串在一起；
+- `PricingCatalog` 将普通输入、缓存输入和输出分开计价，价格版本和模型随快照留存；
+- 未配置价格、未知模型或成功响应缺 usage 时 `estimated_cost_usd=null`，而不是错误写 0；
+- soft budget 触发 `context_budget_forced`，复用 P0-4 的完整消息组压缩/确定性裁剪链路；
+- hard budget 在规划、压缩、执行和重规划响应后检查，越界响应不再进入下一步决策；
+- 成功后的 memory_capture 仍纳入总用量和成本，但不消耗已经结束的核心 Agent Loop 预算；
+- 配置校验保证 soft < hard，价格版本和三档单价必须全有或全无；
+- 验收资产见 `tests/test_metering.py`、`tests/test_llm_client.py`、`tests/test_config.py`；
+  学习说明见 `docs/design/13_metering_and_budget.md`。
+
+遵照当前任务约定，本轮不执行 pytest、Fake Evaluation、真实模型、Docker 或 MinIO；
+待执行命令和逐项证据见 `docs/verification/09_metering_budget.md`，不预填任何 PASS。
 
 **目标**
 

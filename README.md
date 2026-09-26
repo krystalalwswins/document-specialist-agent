@@ -68,6 +68,11 @@ Executor；任务成功后才执行候选提取、规则过滤、去重和 SQLit
 Evaluation 位于主链之外：它提交版本化案例，复用同一条 Orchestrator 调用链，再只读
 Task、TaskStep、plan_events 和 metrics 计算效果指标，不参与 Agent 的执行决策。
 
+Metering 横切所有模型调用：`plan / replan / context_compaction / execute /
+memory_capture` 的原始事件先写入 `llm_events`，再聚合为 task、phase、iteration 三层
+`metrics.usage`。核心 Agent Loop 的累计 Token 达到 soft budget 后要求 ContextManager
+主动收敛，达到 hard budget 后终止任务。
+
 ---
 
 ## 3. 核心能力
@@ -86,6 +91,22 @@ Task、TaskStep、plan_events 和 metrics 计算效果指标，不参与 Agent �
 - **压缩熔断**：压缩请求超长或响应非法时，按完整组移除最早历史后有限重试；连续失败打开熔断器，后续改用确定性整组裁剪，仍超过 hard limit 才明确终止任务。
 - **终止控制**：`max_iterations` 限制单次执行的轮数；单步失败不中断，错误交回模型决定换路。
 - **可观测**：每次 LLM 调用、工具调用、上下文决策和记忆读写都写入任务指标（`llm_events` / `retry_events` / `context_events` / `memory_events`）。
+
+### Token、时延与成本计量
+
+- **统一 usage**：兼容 OpenAI 风格 `prompt_tokens_details.cached_tokens` 与 DeepSeek 风格
+  `prompt_cache_hit_tokens`，统一记录 prompt / completion / total / cache tokens、模型名、
+  单次时延和重试状态。
+- **三层聚合**：原始事件保持追加写入；`UsageMeter` 将其派生为 task 总量、phase 总量和
+  `phase:iteration` 总量。失败重试计入 attempts 与时延，但没有 provider usage 时不虚构
+  Token。
+- **版本化估价**：价格通过环境变量显式配置并带 `pricing_version`；缓存输入、普通输入和
+  输出分别计价。未配置价格或遇到未知模型时费用为 `null`，不会把未知成本算成 0。
+- **累计预算**：`plan / replan / context_compaction / execute` 消耗共同预算；达到 soft
+  budget 后下一轮强制走上下文收敛路径，达到 hard budget 后抛出明确异常并使任务失败。
+  成功后的 best-effort 记忆提取仍计量，但不消耗核心执行预算。
+- **费用语义**：`estimated_cost_usd` 是按本地版本化价格表计算的估算值，不是供应商最终
+  账单；供应商舍入、折扣、峰谷价格或隐藏 Token 都可能造成差异。
 
 ### 本地长期记忆
 
@@ -292,6 +313,7 @@ curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
 | 模型 | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | — / `https://api.deepseek.com` / `deepseek-chat` | OpenAI 兼容模型配置 |
 | 模型 | `LLM_TIMEOUT` / `LLM_MAX_ATTEMPTS` | `60` / `3` | 单次调用超时与重试预算 |
 | 模型 | `LLM_RETRY_BASE_DELAY` / `LLM_RETRY_MAX_DELAY` | `1` / `10` | 退避区间（秒） |
+| 计量 | `LLM_PRICING_VERSION` + 三档 `*_PRICE_USD_PER_MILLION` | 空 | 可选版本化单价；四项必须同时配置 |
 | 上下文 | `CONTEXT_TARGET_TOKENS` / `CONTEXT_SOFT_LIMIT_TOKENS` / `CONTEXT_HARD_LIMIT_TOKENS` | `32000` / `48000` / `56000` | 压缩目标、触发阈值与输入硬上限 |
 | 上下文 | `CONTEXT_WINDOW_TOKENS` / `CONTEXT_OUTPUT_RESERVE_TOKENS` | `64000` / `8000` | 模型窗口与回答预留空间 |
 | 上下文 | `CONTEXT_RECENT_GROUPS` | `2` | 优先保留的最近完整消息组数量 |
@@ -302,6 +324,7 @@ curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
 | 任务 | `TASK_STALE_AFTER_SECONDS` / `TASK_REAPER_INTERVAL_SECONDS` | `1800` / `60` | 僵死判定阈值与巡检间隔 |
 | 任务 | `TASK_MAX_WORKERS` / `TASK_MAX_PENDING` | `2` / `32` | 并发 worker 数与可排队数 |
 | 任务 | `TASK_MAX_RECOVERY_ATTEMPTS` | `1` | 产物校验失败后的修复重试次数 |
+| 任务 | `TASK_SOFT_TOKEN_BUDGET` / `TASK_HARD_TOKEN_BUDGET` | `200000` / `300000` | 累计核心模型调用的收敛/终止阈值 |
 | 文档 | `DOCUMENT_MAX_CHARS` | `20000` | `parse_document` 返回给模型的字符预算 |
 | 接口 | `API_TOKEN` | 空 | 为空则不做鉴权 |
 
@@ -313,6 +336,7 @@ curl http://127.0.0.1:8000/tasks/<task_id> -H "X-API-Token: <你的 API_TOKEN>"
 .venv\Scripts\python.exe -m pytest -q tests/test_harness_v1_scenarios.py
 .venv\Scripts\python.exe -m pytest -q tests/test_memory_store.py tests/test_memory_policy.py tests/test_memory_service.py tests/test_memory_prompting.py tests/test_memory_extractor.py tests/test_orchestrator_memory.py tests/test_memory_api.py
 .venv\Scripts\python.exe -m pytest -q tests/test_evaluation.py
+.venv\Scripts\python.exe -m pytest -q tests/test_metering.py tests/test_llm_client.py tests/test_config.py
 .venv\Scripts\python.exe -m pytest -q
 ```
 
@@ -336,9 +360,9 @@ README 不固化易过期的 passed 数量；当前版本的环境、commit、�
 - **无多租户**：没有账号体系，`GET /tasks` 返回该实例的全部任务。
 - **记忆作用域不是鉴权边界**：`user_id/project_id` 用于本地数据分组，API 调用者仍由
   `API_TOKEN` 统一保护；当前关键词召回可解释但不理解同义词，语义召回属于后续增强。
-- **有 Token 用量轨迹，尚无价格成本换算**：模型返回 usage 时会记录
-  prompt/completion/total tokens 并用于后续上下文估算校准；当前未维护供应商单价表，
-  因此不计算货币成本。
+- **成本只是本地估算**：未配置版本化单价时 `estimated_cost_usd` 为 `null`；即使配置，
+  也不能替代供应商账单。hard budget 使用 provider 已返回的 usage，因此能拒绝越界响应并
+  阻止后续调用，但不能预先阻止“首次把累计量推过阈值”的那一次请求。
 - **Evaluation 当前不做语义答案裁判**：P1-2 只根据确定性执行轨迹和产物校验评分，
   不使用 LLM-as-a-Judge；Fake 高分证明 Harness 控制流可重复，不等于真实模型质量高。
 - **无 CI 与部署产物**：仓库没有 GitHub Actions，也没有 API 服务自身的 Dockerfile 与反向代理配置。
@@ -355,3 +379,5 @@ README 不固化易过期的 passed 数量；当前版本的环境、commit、�
 - `docs/verification/07_local_memory.md`：P1-1 验收矩阵与待执行命令。
 - `docs/design/12_evaluation_module.md`：独立 Evaluation 的案例、评分、运行与报告链路。
 - `docs/verification/08_evaluation.md`：P1-2 验收矩阵与待执行命令。
+- `docs/design/13_metering_and_budget.md`：P1-3 计量、估价与累计预算的设计和学习说明。
+- `docs/verification/09_metering_budget.md`：P1-3 验收矩阵与待执行命令。

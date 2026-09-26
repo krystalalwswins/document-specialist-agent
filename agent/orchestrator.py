@@ -9,6 +9,8 @@ from typing import Any, TYPE_CHECKING
 from agent.executor import Executor
 from agent.planner import Planner
 from agent.validator import ArtifactCheck, ArtifactValidator, ValidationResult
+from metering.budget import BudgetController
+from metering.meter import UsageMeter
 from task.task_manager import TaskManager
 from task.task_model import Task, TaskStatus
 
@@ -32,6 +34,8 @@ class AgentOrchestrator:
         validator: ArtifactValidator | None = None,
         max_recovery_attempts: int = 0,
         memory_service: "MemoryService | None" = None,
+        usage_meter: UsageMeter | None = None,
+        budget_controller: BudgetController | None = None,
     ) -> None:
         self._task_manager = task_manager
         self._planner = planner
@@ -40,6 +44,8 @@ class AgentOrchestrator:
         self._validator = validator
         self._max_recovery_attempts = max_recovery_attempts
         self._memory_service = memory_service
+        self._usage_meter = usage_meter
+        self._budget_controller = budget_controller
 
     @property
     def task_manager(self) -> TaskManager:
@@ -68,13 +74,13 @@ class AgentOrchestrator:
             self._stage_inputs(task_id)
             memory_context = self._recall_memories(task_id)
             plan_arguments: dict[str, Any] = {
-                "on_event": self._task_manager.metric_sink(
-                    task_id, "llm_events", phase="plan"
-                )
+                "on_event": self._llm_sink(task_id, phase="plan")
             }
             if memory_context:
                 plan_arguments["memory_context"] = memory_context
             plan = self._planner.plan(task.user_input, **plan_arguments)
+            if self._budget_controller is not None:
+                self._budget_controller.after_call(task_id, phase="plan")
             # Persist the validated plan before any execution can occur.
             self._task_manager.set_plan(task_id, plan)
             answer, artifacts = self._execute_with_recovery(
@@ -184,9 +190,7 @@ class AgentOrchestrator:
             report = self._memory_service.capture(
                 self._task_manager.get_task(task_id),
                 answer,
-                on_event=self._task_manager.metric_sink(
-                    task_id, "llm_events", phase="memory_capture"
-                ),
+                on_event=self._llm_sink(task_id, phase="memory_capture"),
             )
             self._task_manager.add_metric_events(
                 task_id, "memory_events", [report.to_event()]
@@ -200,6 +204,11 @@ class AgentOrchestrator:
                 "kind": "memory_capture_failed",
                 "error": type(exc).__name__,
             }])
+
+    def _llm_sink(self, task_id: str, *, phase: str):
+        if self._usage_meter is not None:
+            return self._usage_meter.event_sink(task_id, phase=phase)
+        return self._task_manager.metric_sink(task_id, "llm_events", phase=phase)
 
     def _check_artifacts(
         self, task_id: str, artifacts: list[dict], require_artifact: bool = False
