@@ -3,7 +3,8 @@
 > 记录日期：2026-09-18  
 > 实现分支：`feat/harness-p0-5`  
 > 开发基线：`feat/harness-p0-4` / `195ba1d`  
-> 当前状态：端到端 Fake LLM 场景和证据矩阵已提交，完整 pytest 与真实 Docker 验证待独立 Codex 执行。
+> 当前状态：离线回归已于 2026-09-28 执行并通过（见 4.2 节）；真实 Docker 烟测因验收机
+> 未安装 Docker 而**未执行**（见 5.3 节），P0-5 尚未收口。
 
 本文档是一次验收记录，不是对
 [`01_security.md`](01_security.md) 的覆盖或改写。`01_security.md` 保留当时的历史结论；
@@ -11,15 +12,15 @@
 
 ## 1. 验收对象
 
-| 项目 | 验收前填写 |
+| 项目 | 验收结果 |
 | --- | --- |
-| Commit SHA | `PENDING` |
-| 工作区状态 | `PENDING` |
-| 操作系统 | `PENDING` |
-| Python / pytest | `PENDING` |
-| Docker Engine / Compose | `PENDING` |
-| `agent-sandbox` SDK | `PENDING`（依赖锁定值为 `0.0.30`） |
-| 沙箱镜像 tag / image ID | `PENDING` |
+| Commit SHA | `b9bbe72c57831572364c2ac8bfa7a62229514189` |
+| 工作区状态 | 执行测试时为空；随后仅新增本验收记录文件 |
+| 操作系统 | Windows 11 25H2（build 26200） |
+| Python / pytest | 3.13.2（工作区 `.venv`）/ 9.1.1 |
+| Docker Engine / Compose | **不可用**：验收机未安装 `docker` 命令，第 5 节未执行 |
+| `agent-sandbox` SDK | `0.0.30`（`requirements.txt` 锁定） |
+| 沙箱镜像 tag / image ID | 未验证（Docker 不可用） |
 
 验收者必须在执行命令前填写准确 SHA，并在完成后附上 `git status --short`。
 禁止将未执行的项目填写为 PASS。
@@ -78,19 +79,44 @@ Linux / macOS：
 .venv/bin/python -m pytest -q
 ```
 
-### 4.2 结果（验收后填写）
+### 4.2 结果
 
-- Harness V1 聚焦测试：`PENDING`
-- 完整 pytest：`PENDING`
-- 新增/修改测试数量：`PENDING`
-- 已知环境跳过：`PENDING`
-- 失败堆栈：`PENDING`
+- Harness V1 聚焦测试：`8 passed in 1.63s`
+- 完整 pytest：`364 passed, 1 skipped, 1 warning in 11.95s`
+- 新增/修改测试数量：新增 12 个测试文件（70 个测试函数）；修改 7 个既有测试文件
+- 已知环境跳过：1 项，`tests/test_security.py:102`（Windows 无法创建符号链接）
+- 失败堆栈：无
 
 完整输出：
 
 ```text
-PENDING
+........................................................................ [ 19%]
+........................................................................ [ 39%]
+........................................................................ [ 59%]
+......................................................s................. [ 78%]
+........................................................................ [ 98%]
+.....                                                                    [100%]
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_security.py:102: OS/user cannot create symlinks (on Windows: enable Developer Mode)
+364 passed, 1 skipped, 1 warning in 11.95s
 ```
+
+聚焦场景输出：
+
+```text
+........                                                                 [100%]
+8 passed in 1.63s
+```
+
+新增的 12 个测试文件为 `test_harness_v1_scenarios.py`、`test_executor_plan_binding.py`、
+`test_plan_state.py`、`test_memory_{store,policy,extractor,service,prompting,api}.py`、
+`test_orchestrator_memory.py`、`test_metering.py`、`test_evaluation.py`。
+
+> 验收起始状态必须记录：验收前 `main`（`4899a5c`）直接执行 `python -m pytest -q` 会在
+> **收集阶段**失败，原因是 `memory/extractor.py` 顶层的 `agent.llm_client` 导入构成
+> `agent.llm_client → retry → tools → memory.extractor` 环；另外以 `context` 为首个导入
+> 的入口（例如 P1-3 文档推荐的 `tests/test_metering.py`）会触发 `context/compactor.py`
+> 的同类环。两处均在本次验收中修复（`470cb10`、`b9bbe72`）后，上表结果才成立。
 
 ## 5. 真实 Docker 安全烟测
 
@@ -117,17 +143,22 @@ docker inspect doc-agent-sandbox
 - timeout 探针等待后，延迟副作用文件不存在；
 - 脚本退出码为 0。
 
-### 5.3 结果（验收后填写）
+### 5.3 结果
 
-- `security_smoke`：`PENDING`
-- timeout probe：`PENDING`
-- 退出码：`PENDING`
+- `security_smoke`：`NOT RUN`
+- timeout probe：`NOT RUN`
+- 退出码：`N/A`
 
 完整输出：
 
 ```text
-PENDING
+docker: The term 'docker' is not recognized as a name of a cmdlet, function, script file,
+or executable program. Check the spelling of the name, or if a path was included, verify
+that the path is correct and try again.
 ```
+
+验收机未安装 Docker Engine / Compose，5.1 节的前置检查无法通过。按本页"禁止将未执行
+的项目填写为 PASS"的要求，第 5 节整体记录为 `NOT RUN`，既不记为通过，也不记为失败。
 
 ## 6. 必须保留的安全边界
 
@@ -147,3 +178,7 @@ PENDING
 3. 真实 Docker `security_smoke` 退出码为 0，timeout probe 通过；
 4. 本页填入准确环境、SHA 与完整输出；
 5. 验收后工作区无意外改动。
+
+本次（2026-09-28）达成情况：条件 1、2、4、5 满足；**条件 3 不满足**，因为验收机没有
+Docker，真实沙箱烟测未执行。因此本页结论是"八条离线端到端场景通过、真实 Docker
+验证缺口仍在"，`task_points.md` 中 P0-5 尚不能标记为已完成。

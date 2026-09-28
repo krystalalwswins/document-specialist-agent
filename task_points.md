@@ -5,6 +5,7 @@
 > 审计基线：`1a2b7df12258f33e6912cb48f7118d051e38ee2b`  
 > 第 2–5 节保留上述基线的审计快照；后续实现进度以各任务下的执行记录为准。
 > 2026-09-26：P0-1、P0-2 已完成；P0-3、P0-4 已实现并提交验收说明，等待独立测试；P0-5 已补齐端到端场景、等待独立环境执行；P1-1 本地长期记忆、P1-2 独立 Evaluation 和 P1-3 Token/时延/成本计量已实现并完成分支交付材料；P2 及后续编号尚未开始。
+> 2026-09-28：离线验收已执行并回填到 `docs/verification/04`～`09`（被验收 SHA `b9bbe72`，全量 `364 passed, 1 skipped`）。P1-1 全部必查行为通过，可标记为已完成；P0-3、P0-4 主链路通过，但文档建议的细粒度聚焦测试未合入 `main`；P0-5 八条端到端场景通过，真实 Docker 烟测因验收机未安装 Docker 未执行；P1-2 Fake 评测九案例全通过，真实模型未跑；P1-3 聚焦与全量均通过。验收过程中修复了两处顺序相关循环导入（`470cb10`、`b9bbe72`）。
 
 ## 1. 最终定位
 
@@ -313,7 +314,7 @@ P0-1。
 
 ### P0-3：实现通用工具大结果卸载与二次回读
 
-**状态：实现完成，待独立验收（2026-09-18，功能分支 `feat/harness-p0-3`）**
+**状态：主链路验收通过、细粒度用例未覆盖（2026-09-28，`main` / `b9bbe72`）**
 
 最小修改方案：保留既有 Tool Registry 与 ReAct 循环，在工具真实执行完成后、
 任务步骤落盘和 Tool Result 回注模型之前加入统一 `AfterToolCallHook`。小结果沿用
@@ -384,7 +385,7 @@ read_tool_output → Registry 注入 task_id → 限量分页回读 → Hook →
 
 ### P0-4：实现上下文预算、完整消息组压缩与熔断
 
-**状态：实现完成，待独立验收（2026-09-18，功能分支 `feat/harness-p0-4`）**
+**状态：主链路验收通过、细粒度用例未覆盖（2026-09-28，`main` / `b9bbe72`）**
 
 最小修改方案：不改变 P0-2 的计划运行时和 P0-3 的 Tool Result Hook，仅在每轮
 Executor 主模型调用之前增加 `ContextManager.prepare`。上下文先经 TokenEstimator
@@ -466,7 +467,7 @@ P0-3。
 
 ### P0-5：补齐 Harness V1 回归测试和真实验证记录
 
-**状态：测试与验证材料已实现，待独立执行（2026-09-18，功能分支 `feat/harness-p0-5`）**
+**状态：离线八条场景通过，真实 Docker 烟测未执行（2026-09-28，`main` / `b9bbe72`）**
 
 本轮新增 `tests/test_harness_v1_scenarios.py`，通过统一的
 `AgentOrchestrator.run` 入口覆盖静态计划、失败换路、局部重规划、大结果卸载与
@@ -527,7 +528,7 @@ P0-3。
 
 ### P1-1：本地长期记忆（不做向量化）
 
-**状态：实现完成，待独立验收（2026-09-23，功能分支 `feat/harness-p1-1`）**
+**状态：已完成（2026-09-28，`main` / `b9bbe72`，聚焦 127 passed、全量 364 passed）**
 
 最小实现方案：保持 Task 轨迹继续使用 JSON 文件，不迁移现有存储；新增独立的
 SQLite MemoryStore。任务以 `user_id/project_id` 形成逻辑作用域，开始前执行作用域
@@ -585,7 +586,7 @@ SQLite MemoryStore。任务以 `user_id/project_id` 形成逻辑作用域，开�
 
 ### P1-2：建立独立 Evaluation
 
-**状态：实现完成，待独立执行（2026-09-24，功能分支 `feat/harness-p1-2`）**
+**状态：Fake 模式已完成（2026-09-28，`main` / `b9bbe72`，九案例 PASS）；真实模型未执行**
 
 最小实现方案：Evaluation 作为 Agent 主链之外的只读消费者，不修改 Orchestrator、
 Planner、Executor 或 Task 状态。版本化案例仍通过正常 Orchestrator 入口执行，结束后从
@@ -642,7 +643,7 @@ Task、TaskStep、plan_events 和 metrics 读取证据，由确定性 Scorer 计
 
 ### P1-3：Token、时延和成本计量
 
-**状态：实现完成，待独立执行（2026-09-26，功能分支 `feat/harness-p1-3`）**
+**状态：已完成（2026-09-28，`main` / `b9bbe72`，聚焦 20 passed、全量 364 passed）**
 
 最小实现方案：保留 `llm_events` 作为追加式原始证据，新增独立 `metering/` 从这些事件
 生成可重算的 `metrics.usage`，避免把聚合结果当成另一份事实源。所有模型调用按 task、
