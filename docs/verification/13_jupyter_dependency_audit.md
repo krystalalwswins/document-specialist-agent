@@ -159,4 +159,6 @@ rg -n "execute_python|execute_in_sandbox|SandboxClient" .
    具体成本核算与生产链路设计仍待下一步。
 
 本轮为只读审计：未修改 `SandboxClient.execute_python` 或任何生产代码，
+迁移成本核算与生产执行链路设计见
+[`../design/14_one_shot_execution_migration.md`](../design/14_one_shot_execution_migration.md)。
 P0-5 继续保持未完成。
