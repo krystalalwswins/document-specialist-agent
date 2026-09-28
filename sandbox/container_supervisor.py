@@ -28,6 +28,10 @@ CREATED_AT_LABEL = "doc-agent.created_at"
 DEFAULT_EXEC_TIMEOUT = 30.0
 CLEANUP_DEADLINE_SECONDS = 20.0
 VERIFY_POLL_SECONDS = 0.2
+# Small margin over the requested timeout so a script that finishes right on
+# time is not killed, while the host timer stays the real bound. This is NOT the
+# legacy HTTP grace (10s), which would let a timeout overrun unnoticed.
+EXEC_KILL_GRACE_SECONDS = 1.0
 
 
 class SandboxUnavailable(RuntimeError):
@@ -237,7 +241,7 @@ class ContainerSupervisor:
         sibling = "%s/tasks/not-this-task" % self._settings.sandbox_workspace
         return "; ".join(
             [
-                "printf 'read_input='; cat %s/input.txt 2>&1 || true" % task_path,
+                "printf 'read_input='; cat %s/input.txt 2>&1 || true; echo" % task_path,
                 "printf 'write_out='; if printf x > %s/out/.probe 2>/dev/null; then rm -f %s/out/.probe; echo ok; else echo denied; fi" % (task_path, task_path),
                 "printf 'write_rootfs='; if printf x > /.probe 2>/dev/null; then echo ok; else echo denied; fi",
                 "printf 'write_tmp='; if printf x > /tmp/.probe 2>/dev/null; then echo ok; else echo denied; fi",
@@ -265,6 +269,11 @@ class ContainerSupervisor:
         container_id = ""
         try:
             self._workspace.write_runner(layout, build_runner_source(code))
+            # The task directory is mounted read-only, so Docker cannot create the
+            # nested `out` mountpoint itself (`--read-only` makes that mkdir fail).
+            # Pre-creating an empty placeholder on the host is what makes the
+            # read-only-parent + writable-child layout work.
+            Path(task_dir, "out").mkdir(parents=True, exist_ok=True)
             created = self._runner.run(
                 [
                     "run", "-d",
@@ -296,8 +305,13 @@ class ContainerSupervisor:
 
             try:
                 executed = self._runner.run(
-                    ["exec", container_id, "python3", RUNNER_PATH_IN_CONTAINER],
-                    timeout=script_timeout + self._settings.sandbox_http_grace,
+                    [
+                        "exec",
+                        "-w", self._container_task_path(task_id),
+                        container_id,
+                        "python3", RUNNER_PATH_IN_CONTAINER,
+                    ],
+                    timeout=script_timeout + EXEC_KILL_GRACE_SECONDS,
                 )
             except DockerTimeout:
                 gone = self._destroy(container_id)

@@ -187,9 +187,15 @@ class FakeDockerRunner:
         return CommandResult(argv, 0, container_id + "\n", "")
 
     def _exec(self, argv: tuple[str, ...]) -> CommandResult:
-        container_id = argv[1] if len(argv) > 1 else ""
+        # `docker exec` may carry flags such as `-w <dir>` before the container id.
+        container_id = ""
+        rest: tuple[str, ...] = ()
+        for index, token in enumerate(argv):
+            if token in self.containers:
+                container_id = token
+                rest = argv[index + 1 :]
+                break
         container = self.containers.get(container_id)
-        rest = argv[2:]
         if container is not None:
             container.exec_calls.append(rest)
         if self.exec_queue:
