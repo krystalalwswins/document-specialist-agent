@@ -467,7 +467,7 @@ P0-3。
 
 ### P0-5：补齐 Harness V1 回归测试和真实验证记录
 
-**状态：离线八条场景通过；真实沙箱烟测未通过（测量脚本已校准；`hard_timeout` 能力探针 8/8 泄漏，证据见 `docs/verification/10_hard_timeout_probe.md`；硬超时语义待独立修复）（2026-09-28，`main`）**
+**状态：离线八条场景通过；真实沙箱烟测未通过（测量脚本已校准；`hard_timeout` 探针 8/8 泄漏、`cleanup_session` 探针在脱离进程组场景泄漏，证据见 `docs/verification/10_hard_timeout_probe.md` 与 `11_cleanup_session_probe.md`；两条候选路线均已排除，下一步评估一次性容器）（2026-09-28，`main`）**
 
 本轮新增 `tests/test_harness_v1_scenarios.py`，通过统一的
 `AgentOrchestrator.run` 入口覆盖静态计划、失败换路、局部重规划、大结果卸载与

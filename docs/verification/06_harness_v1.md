@@ -294,4 +294,7 @@ exit_code=1
    而不是依赖 `execute_code(timeout=...)` 的服务端语义。修复前 P0-5 不得收口，
    也不得把本页任何一项标记为完全通过。已完成的 `hard_timeout` 能力探针证明 shell
    路径同样不能终止执行（8/8 泄漏），证据见
-   [`10_hard_timeout_probe.md`](10_hard_timeout_probe.md)。
+   [`10_hard_timeout_probe.md`](10_hard_timeout_probe.md)；`cleanup_session` 能力探针
+   证明会话级终止既不即时也不完备（脱离进程组场景泄漏），证据见
+   [`11_cleanup_session_probe.md`](11_cleanup_session_probe.md)。两条候选路线均已排除，
+   下一步转向一次性容器评估。
