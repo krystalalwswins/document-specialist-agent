@@ -5,12 +5,16 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from jsonschema import Draft202012Validator
 
-from agent.llm_client import LLMClient
 from context.message_groups import MessageGroup, flatten_groups
+
+if TYPE_CHECKING:
+    # Type-only import: a runtime import here closes the cycle
+    # agent.llm_client -> agent.executor -> context.manager -> context.compactor.
+    from agent.llm_client import LLMClient
 
 
 RESULT_REF_PATTERN = re.compile(r"\bout_[0-9a-f]{32}\b")
