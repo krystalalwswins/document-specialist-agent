@@ -3,6 +3,8 @@
 > 状态：**已冻结（2026-09-28），未实现**
 > 冻结记录：第一次评审为有条件通过（7 项修订），第二次评审确认达到冻结标准；
 > 实现分支：`feat/one-shot-execution`
+> 前置真机探针：**已完成，15/15 通过**（见第 8 节）；其中"镜像内存在 `gem` 用户"的
+> 假设被推翻，运行身份改为固定 `1000:1000`
 > 上游证据：[`../verification/12_one_shot_container_probe.md`](../verification/12_one_shot_container_probe.md)、
 > [`../verification/13_jupyter_dependency_audit.md`](../verification/13_jupyter_dependency_audit.md)
 > 本文不改动任何生产代码；评审通过后才建立 `feat/one-shot-execution` 分支。
@@ -32,8 +34,8 @@
 | # | 议题 | 决定 |
 | --- | --- | --- |
 | 1 | 旧 HTTP 后端降级 | **不保留自动降级路径**。生产 `wiring` 只装配一次性容器后端；旧类可保留用于差异测试，但不提供运行期 fallback；需要回滚时用 Git 版本回滚，而不是降低安全等级。P0-5 完成前删除遗留生产接线。 |
-| 2 | 镜像 | 第一版继续使用 AIO Sandbox 镜像，但必须**固定镜像摘要**；覆盖 entrypoint，不启动原有 HTTP/Jupyter 服务；本次不裁剪专用镜像。注意本地 image ID 不等同于仓库 manifest digest，不可混用。 |
-| 3 | 运行用户 | **固定非 root UID/GID**（取镜像内 `gem` 用户的实际值并写入配置），每次调用前做写入自检。Windows Docker Desktop 的挂载权限行为需真机探针；若现有镜像无法可靠支持非 root，则构建派生镜像，**不退回 root**。 |
+| 2 | 镜像 | 第一版继续使用 AIO Sandbox 镜像，固定为 `...all-in-one-sandbox:1.11.0@sha256:6328d7fd2f0ff0b4c147c3d05b3df1ce331f4a482eb6e550ecd64ed1fcf906e7`（前置探针已确认 manifest digest 与本地 image ID 一致）；覆盖 entrypoint，不启动原有 HTTP/Jupyter 服务；本次不裁剪专用镜像。镜像内 Python 为 **3.10.12**，与开发虚拟环境 3.13 不同，需在工具契约中说明。 |
+| 3 | 运行用户 | **前置探针推翻了"镜像内有 `gem` 用户"的假设**：镜像内不存在 `gem` 账户，`/home/gem` 也不存在（原先是 entrypoint 与 compose volume 造成的）。改为固定 `1000:1000`——实测只有该 UID 能写嵌套 `out` 挂载，`65534:65534` 与 `0:0` 均被拒绝。Windows Docker Desktop 的写权限由**宿主文件共享身份**决定，容器内 `stat` 显示的 `0:0 777` 不代表真实门禁。 |
 | 4 | 只读根文件系统 | **第一版即启用** `--read-only --tmpfs /tmp`，并把 `HOME` / `XDG_CACHE_HOME` / `MPLCONFIGDIR` 重定向到 `/tmp`。 |
 | 5 | 冷启动性能 | 实现分支必须重测：镜像已存在时 20–30 次的 P50/P95、Docker Desktop 刚启动后的首次调用、各阶段耗时、首次拉取单独统计；生产执行使用 `--pull never`。 |
 
@@ -103,6 +105,18 @@
 **最终配置**（`--read-only` + `--tmpfs /tmp` + 非 root + `--network none` +
 `--entrypoint sleep infinity`）重新实测，并按 1 号决策表第 5 项分阶段记录。
 
+**前置探针实测（最终配置，Windows Docker Desktop 29.7.2）：**
+
+| 阶段 | 实测 |
+| --- | --- |
+| keepalive 容器创建并启动 | **0.36s** |
+| `docker rm -f` | **0.23s** |
+| 按精确 ID 轮询确认真实消失 | **0.42s** |
+| 固定开销合计（不含 exec 与产物提交） | **≈1.01s / 次** |
+
+5 次代码调用的固定开销约 **5s**（首版 1.33s/次 的估算偏保守）。exec 执行时间与产物提交
+时间取决于任务本身，不计入固定开销。
+
 ### 2.5 成本之外的真实风险
 
 1. **末行表达式语义**：当前 System Prompt 未要求 `print`，迁移后会静默失效；
@@ -163,12 +177,13 @@
                        --label doc-agent.tool_call_id=<call_id>
                        --network none --pull never
                        --read-only --tmpfs /tmp
-                       --user <uid>:<gid> --cap-drop ALL --security-opt no-new-privileges
+                       --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges
                        --cpus 2 --memory 4g --memory-swap 4g --pids-limit 512
-                       --entrypoint sleep <image-digest> infinity
+                       --entrypoint sleep <image>@<digest> infinity
                        -v <host_task_dir>:/home/gem/workspace/tasks/<task_id>:ro
                        -v <call>/out:/home/gem/workspace/tasks/<task_id>/out:rw
                        -v <call>/control/run.py:/runner/run.py:ro
+                       -e HOME=/tmp -e XDG_CACHE_HOME=/tmp -e MPLCONFIGDIR=/tmp
                     记录返回的精确 Container ID
 3. 宿主侧执行        docker exec -i <container_id> python3 /runner/run.py
                      （宿主计时器负责超时；不信任 exec 自身的 timeout）
@@ -244,8 +259,8 @@
 2. `--network none`，容器不可出网、不可被外部访问。
 3. `--read-only --tmpfs /tmp`，`HOME` / `XDG_CACHE_HOME` / `MPLCONFIGDIR` 指向 `/tmp`；
    若某解析库需要额外可写路径，只新增明确的 tmpfs，不放开整个根文件系统。
-4. 固定非 root `UID:GID`，每次调用前自检：输入可读、`out/` 可写、其他任务目录不可见、
-   根文件系统不可写。
+4. 固定非 root `1000:1000`（前置探针实测唯一可写 `out/` 的身份），每次调用前自检：
+   输入可读、`out/` 可写、其他任务目录不可见、根文件系统不可写。
 5. `--cap-drop ALL`、`no-new-privileges`、资源限制沿用已验收的
    `2 CPU / 4 GiB / swap=内存 / PIDs 512`。
 6. 镜像固定摘要 + `--pull never`，启动阶段先验证镜像存在，避免任务触发不受控拉取。
@@ -327,12 +342,12 @@
 
 ## 6. 剩余待确认项
 
-第 1 节的 5 项已冻结。实现前仍需在真机上收口的只剩两项：
+第 1 节的 5 项已冻结，实现前的两项环境探针已在前置探针中收口：
 
-| # | 问题 | 处理方式 |
+| # | 问题 | 结论 |
 | --- | --- | --- |
-| 1 | 镜像内 `gem` 用户的实际 UID/GID，以及 Windows 挂载下的写权限行为 | 实现分支的第一项真机探针；不可靠则构建派生镜像 |
-| 2 | 固定后的镜像摘要（须与实际仓库 manifest digest 一致，不能直接沿用本地 image ID） | 实现分支启动阶段验证并写入配置 |
+| 1 | 镜像内 `gem` 用户的实际 UID/GID，以及 Windows 挂载下的写权限行为 | **已收口**：镜像内不存在 `gem` 用户；固定 `1000:1000` 可写嵌套 `out`，`65534` 与 `0` 均不可写 |
+| 2 | 固定后的镜像摘要 | **已收口**：`sha256:6328d7fd2f0ff0b4c147c3d05b3df1ce331f4a482eb6e550ecd64ed1fcf906e7`（manifest digest 与本地 image ID 一致） |
 
 ---
 
@@ -340,3 +355,77 @@
 
 本页修订完成即冻结设计。评审通过后建立 `feat/one-shot-execution` 分支，按 5.1 → 5.2 →
 5.3 推进；在此之前不修改生产代码，P0-5 保持未完成。
+
+---
+
+## 8. 前置真机探针记录（2026-09-28）
+
+脚本：[`demo/one_shot_preflight_probe.py`](../../demo/one_shot_preflight_probe.py)
+（分支 `feat/one-shot-execution`，诊断用途，不涉及生产代码）。
+
+复现命令：
+
+```powershell
+.venv\Scripts\python.exe -m demo.one_shot_preflight_probe
+```
+
+结果：**15/15 检查通过**，退出码 0。
+
+### 8.1 推翻的假设
+
+设计冻结时假设镜像内存在 `gem` 用户（沿用 `/home/gem/workspace` 的直觉）。实测：
+
+```text
+$ docker run --rm --entrypoint sh <image> -c "id; grep gem /etc/passwd; ls -d /home/gem"
+uid=0(root) gid=0(root) groups=0(root)
+grep '^gem:' /etc/passwd -> 0 entries
+ls: cannot access '/home/gem': No such file or directory
+```
+
+`/home/gem/workspace` 原先是**容器 entrypoint + compose volume** 造成的，不是镜像自带路径。
+挂载仍然可用（Docker 会按需创建挂载点），但"运行身份"必须显式指定。
+
+### 8.2 非 root 写入矩阵（嵌套 `out` 挂载）
+
+挂载：`<host_task_dir> → /home/gem/workspace/tasks/<task_id>:ro`、
+`<call>/out → .../tasks/<task_id>/out:rw`、`<call>/control/run.py → /runner/run.py:ro`，
+容器参数 `--read-only --tmpfs /tmp --network none --cap-drop ALL --security-opt no-new-privileges`。
+
+| 容器内 UID:GID | 写 `out/` | 写只读父目录 | 写根文件系统 | 写 `/tmp` | 解析库导入 |
+| --- | --- | --- | --- | --- | --- |
+| `1000:1000` | **ok** | denied | denied | ok | 4/4 ok |
+| `65534:65534` | denied | denied | denied | ok | 4/4 ok |
+| `0:0` | denied | denied | denied | ok | 4/4 ok |
+
+容器内 `stat` 显示挂载点为 `0:0 777`，但真实门禁由**宿主文件共享身份**决定——只有
+`1000:1000` 能写。这一点必须在实现中作为配置固定，并在每次调用前做写入自检。
+
+### 8.3 其它实测值
+
+| 项目 | 实测 |
+| --- | --- |
+| 只读父目录 + 可写子目录（嵌套挂载） | 生效（父目录写入被拒绝，`out/` 写入成功） |
+| 只读根文件系统 | 生效（写 `/` 被拒绝） |
+| `--tmpfs /tmp` | 可写 |
+| 控制脚本 `:ro` 挂载并可执行 | 通过（`python3 /runner/run.py` → `runner-ok`） |
+| 宿主可见产物 | `out/out-probe.txt` 出现在宿主目录 |
+| 宿主不可见父目录写入 | `task/hack.txt` 未产生 |
+| keepalive + `docker exec` | 通过（0.36s 启动，`exec-ok`） |
+| 按精确 Container ID 验证消失 | 通过（`rm -f` 0.23s，验证 0.42s） |
+| 镜像内 Python | **3.10.12** |
+| 镜像默认用户 | 空（root） |
+
+### 8.4 配置模型（据此冻结）
+
+```text
+sandbox_image       = .../all-in-one-sandbox:1.11.0@sha256:6328d7fd...
+sandbox_uid_gid     = 1000:1000
+sandbox_network     = none（--pull never）
+sandbox_hardening   = --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges
+sandbox_env         = HOME=/tmp XDG_CACHE_HOME=/tmp MPLCONFIGDIR=/tmp
+sandbox_mounts      = <task_dir>:ro, <call>/out:rw, <call>/control/run.py:/runner/run.py:ro
+```
+
+> 探针同时修正了两个自身缺陷后才得到上述结论：写入目标最初误指向只读父目录；
+> 容器消失检测最初用大小写敏感的 `"No such"`，而 CLI 实际返回小写
+> `error: no such object:`。两者均已修正，最终结果可复现。
