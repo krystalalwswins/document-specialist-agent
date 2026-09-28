@@ -86,11 +86,58 @@ attempts    : 1
 
 ---
 
-## 5. 结论与待办
+## 5. Trace 定位（逐轮消息）
+
+为排除"模型空转"的猜测，新增 [`demo/trace_executor_loop.py`](../../demo/trace_executor_loop.py)
+包装 Executor 的 LLM 客户端，逐轮记录 `finish_reason / content / tool_calls`。
+
+结果**推翻了空转假设**：12 轮**每一轮都有真实工具调用**，第 12 轮返回
+`finish_reason=stop`、无工具调用、带完整最终文本，主循环据此正常收尾：
+
+```text
+round 1  tool_calls  run_python + parse_document
+round 2  tool_calls  complete_plan_step(s1)
+round 3  tool_calls  run_python（汇总计算）
+round 4  tool_calls  complete_plan_step(s2)
+round 5  tool_calls  run_python（写 out/reports/... 前的准备）
+round 6  tool_calls  run_python（写入 out/reports/region_summary.csv）
+round 7  tool_calls  complete_plan_step(s4)
+round 8  tool_calls  save_report(out/reports/region_summary.csv)
+round 9  tool_calls  read_file（回读校验）
+round 10 tool_calls  complete_plan_step
+round 11 tool_calls  complete_plan_step
+round 12 finish=stop  最终回答，无工具调用
+```
+
+原因不是循环缺陷，而是**计划有 6 个步骤、每个 `complete_plan_step` 也占一轮**，
+8 轮预算本身不够。前两次更差的失败另有原因（写只读根目录被拒、产物被协议拒绝），
+那些已在前文修复。`EXECUTOR_MAX_ITERATIONS` 因此不是"掩盖空转"，而是恢复合理预算。
+
+## 6. 真实端到端通过
+
+同一次 trace 运行的任务结果：
+
+```text
+status      : SUCCESS
+answer      : 677 字符（总收入 2900，north 1500 / south 950 / east 450）
+artifacts   : reports/<task_id>/region_summary.csv (49 bytes)
+plan_events : ... plan_step_completed, plan_step_completed, plan_finished
+tokens      : prompt=54184 completion=3285 total=57469 cache=10880
+attempts    : 14（12 轮执行 + 2 次规划/其他）
+duration_ms : 20033
+```
+
+即：**文档解析、代码执行、产物提交与上传、最终回答、`require_artifact` 校验全部完成**。
+
+## 7. 结论与待办
 
 - 真实 LLM + 一次性容器 + 文档解析 + 代码执行 + 产物提交（含 OSS 上传）**已实际打通**；
-- 未通过的部分是**收口**：模型跑完业务步骤后无法在迭代预算内完成计划并给出最终回答；
-- 因此本次端到端验收记为 **未通过**，`require_artifact` 校验也未能执行（任务未到 SUCCESS）；
-- 下一步需要定位第 6 步之后的循环（s6 未完成、无 binding/completion 拒绝事件），
-  这属于 Executor/Planner 的收敛问题，与新后端无关但阻塞验收；
+- 真实 DeepSeek 任务已达到 `SUCCESS`，`require_artifact` 校验通过；
+- 仍待补齐（本轮未完成）：
+  1. 超时回归按"触发销毁 / 清理期限 / 确认消失"三段分别断言，并保留延迟副作用探针；
+  2. `out/` 持久化与允许覆盖的**设计文档同步**，以及"独立副本、确认消失后才提交、
+     失败不得修改上一轮已提交产物"的回归用例；
+  3. 提交前拒绝可重试但**不得自动重放不可信代码**的回归；
+  4. 符号链接用例在 Linux 环境实际执行；
+  5. 用 `demo/real_llm_e2e.py` 重跑一次并留存官方记录。
 - P0-5 保持未完成，分支不合并。
