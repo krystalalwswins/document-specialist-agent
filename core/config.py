@@ -28,6 +28,34 @@ class Settings(BaseSettings):
     sandbox_default_timeout: int = Field(default=30, ge=1)
     sandbox_max_timeout: int = Field(default=120, ge=1)
     sandbox_http_grace: int = Field(default=10, ge=1, le=60)
+
+    # One-shot execution container (design note 14). Lifecycle is host-side only:
+    # one container per code tool call, driven through `docker exec`, destroyed on
+    # completion or timeout. The AIO HTTP settings above are legacy and are no
+    # longer wired into production; they stay for diff testing during migration.
+    sandbox_image: str = Field(
+        default=(
+            "enterprise-public-cn-beijing.cr.volces.com/vefaas-public/"
+            "all-in-one-sandbox:1.11.0"
+            "@sha256:6328d7fd2f0ff0b4c147c3d05b3df1ce331f4a482eb6e550ecd64ed1fcf906e7"
+        ),
+        min_length=1,
+    )
+    # The image ships no dedicated account, and on Windows Docker Desktop only the
+    # host file-sharing identity can write bind mounts. Grep-verified default is
+    # 1000/1000; other machines must confirm it through ContainerSupervisor.preflight().
+    sandbox_uid: int = Field(default=1000, ge=1)
+    sandbox_gid: int = Field(default=1000, ge=1)
+    sandbox_call_root: str = Field(default=".data/sandbox_calls", min_length=1)
+    sandbox_cpus: str = Field(default="2", min_length=1)
+    sandbox_memory: str = Field(default="4g", min_length=1)
+    sandbox_memory_swap: str = Field(default="4g", min_length=1)
+    sandbox_pids_limit: int = Field(default=512, ge=1)
+    sandbox_container_workspace: str = Field(default="/home/gem/workspace", min_length=1)
+    sandbox_output_spool_max_bytes: int = Field(default=32 * 1024 * 1024, ge=1024)
+    sandbox_commit_max_files: int = Field(default=64, ge=1)
+    sandbox_commit_max_total_bytes: int = Field(default=256 * 1024 * 1024, ge=1024)
+    sandbox_orphan_ttl_seconds: int = Field(default=300, ge=1)
     allowed_tools: list[str] = Field(
         default_factory=lambda: [
             "run_python",
@@ -72,6 +100,8 @@ class Settings(BaseSettings):
             raise ValueError("context hard limit plus output reserve exceeds model window")
         if self.task_soft_token_budget >= self.task_hard_token_budget:
             raise ValueError("task token budget must satisfy soft < hard")
+        if "@sha256:" not in self.sandbox_image:
+            raise ValueError("sandbox image must be pinned by digest (@sha256:...); tags may drift")
         pricing = (
             self.llm_input_price_usd_per_million,
             self.llm_cached_input_price_usd_per_million,

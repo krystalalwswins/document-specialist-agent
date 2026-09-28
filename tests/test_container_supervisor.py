@@ -1,0 +1,264 @@
+"""ContainerSupervisor: preflight, per-call validation, timeout and commit.
+
+Everything here is offline: `FakeDockerRunner` stands in for the Docker CLI.
+"""
+
+import os
+
+import pytest
+
+from core.config import Settings
+from sandbox.container_supervisor import ContainerSupervisor
+from sandbox.docker_runner import FakeDockerRunner
+
+VALIDATION_OK = "write_out=ok\nparent_writable=denied\nsibling_visible=no\n"
+PREFLIGHT_OK = (
+    "read_input=preflight-input\nwrite_out=ok\nwrite_rootfs=denied\n"
+    "write_tmp=ok\nsibling_visible=no\n"
+)
+
+
+def _settings(tmp_path, **overrides) -> Settings:
+    values = {"sandbox_call_root": str(tmp_path / "calls")}
+    values.update(overrides)
+    return Settings(_env_file=None, **values)
+
+
+def _supervisor(tmp_path, runner, **overrides) -> ContainerSupervisor:
+    return ContainerSupervisor(
+        runner, _settings(tmp_path, **overrides), cleanup_deadline_seconds=0.4
+    )
+
+
+def _task_dir(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir(exist_ok=True)
+    return task_dir
+
+
+def _live_containers(runner: FakeDockerRunner) -> list[str]:
+    return [container.container_id for container in runner.containers.values() if not container.removed]
+
+
+# --- preflight -------------------------------------------------------------
+
+
+def test_preflight_passes_on_a_healthy_environment(tmp_path):
+    runner = FakeDockerRunner()
+    runner.queue_exec(PREFLIGHT_OK)
+
+    result = _supervisor(tmp_path, runner).preflight()
+
+    assert result.ok, result.summary()
+    assert _live_containers(runner) == []
+
+
+def test_preflight_rejects_root_identity(tmp_path):
+    runner = FakeDockerRunner()
+    settings = _settings(tmp_path)
+    settings.sandbox_uid = 0
+    supervisor = ContainerSupervisor(runner, settings, cleanup_deadline_seconds=0.4)
+
+    result = supervisor.preflight()
+
+    assert not result.ok
+    assert any(name == "non-root uid/gid" and not passed for name, passed, _ in result.checks)
+    # A misconfigured identity must not even start a container.
+    assert runner.containers == {}
+
+
+def test_preflight_fails_when_image_is_missing(tmp_path):
+    runner = FakeDockerRunner(image_present=False)
+
+    result = _supervisor(tmp_path, runner).preflight()
+
+    assert not result.ok
+    assert any(name == "image present locally (no pull)" and not passed for name, passed, _ in result.checks)
+    assert runner.containers == {}
+
+
+def test_preflight_fails_when_out_is_not_writable(tmp_path):
+    runner = FakeDockerRunner()
+    runner.queue_exec(PREFLIGHT_OK.replace("write_out=ok", "write_out=denied"))
+
+    result = _supervisor(tmp_path, runner).preflight()
+
+    assert not result.ok
+    assert any(name == "out writable" and not passed for name, passed, _ in result.checks)
+    assert _live_containers(runner) == []
+
+
+# --- run -------------------------------------------------------------------
+
+
+def test_run_commits_artifacts_and_removes_the_container(tmp_path):
+    runner = FakeDockerRunner()
+    supervisor = _supervisor(tmp_path, runner)
+    task_dir = _task_dir(tmp_path)
+    layout = supervisor.workspace.prepare("call-1")
+    (layout.out / "result.txt").write_text("artifact", encoding="utf-8")
+    runner.queue_exec(VALIDATION_OK)
+    runner.queue_exec("done\n")
+
+    outcome = supervisor.run(
+        code="print('done')", task_dir=task_dir, task_id="task-1", call_id="call-1", timeout=5
+    )
+
+    assert outcome.status == "ok"
+    assert outcome.committed == ["result.txt"]
+    assert (task_dir / "result.txt").read_text(encoding="utf-8") == "artifact"
+    assert outcome.execution_uncertain is False and outcome.terminal is False
+    assert _live_containers(runner) == []
+
+
+def test_run_returns_echoed_stdout(tmp_path):
+    runner = FakeDockerRunner()
+    supervisor = _supervisor(tmp_path, runner)
+    runner.queue_exec(VALIDATION_OK)
+    runner.queue_exec("4\n")
+
+    outcome = supervisor.run(
+        code="2 + 2", task_dir=_task_dir(tmp_path), task_id="task-1", call_id="call-1", timeout=5
+    )
+
+    assert outcome.status == "ok"
+    assert outcome.stdout.strip() == "4"
+
+
+def test_validation_failure_blocks_user_code(tmp_path):
+    runner = FakeDockerRunner()
+    supervisor = _supervisor(tmp_path, runner)
+    runner.queue_exec("write_out=denied\nparent_writable=denied\nsibling_visible=no\n")
+
+    outcome = supervisor.run(
+        code="print('should not run')",
+        task_dir=_task_dir(tmp_path),
+        task_id="task-1",
+        call_id="call-1",
+        timeout=5,
+    )
+
+    assert outcome.status == "uncertain"
+    assert outcome.execution_uncertain and outcome.terminal
+    assert "validation failed" in outcome.error
+    container = next(iter(runner.containers.values()))
+    assert all("python3" not in call for call in container.exec_calls)
+    assert _live_containers(runner) == []
+
+
+def test_read_only_parent_violation_is_terminal(tmp_path):
+    runner = FakeDockerRunner()
+    supervisor = _supervisor(tmp_path, runner)
+    runner.queue_exec("write_out=ok\nparent_writable=ok\nsibling_visible=no\n")
+
+    outcome = supervisor.run(
+        code="1", task_dir=_task_dir(tmp_path), task_id="task-1", call_id="call-1", timeout=5
+    )
+
+    assert outcome.status == "uncertain" and outcome.terminal
+    assert "not read-only" in outcome.error
+
+
+def test_timeout_destroys_the_container_and_is_terminal(tmp_path):
+    runner = FakeDockerRunner()
+    supervisor = _supervisor(tmp_path, runner)
+    runner.queue_exec(VALIDATION_OK)
+    runner.timeout_markers = {"python3"}
+
+    outcome = supervisor.run(
+        code="while True: pass",
+        task_dir=_task_dir(tmp_path),
+        task_id="task-1",
+        call_id="call-1",
+        timeout=2,
+    )
+
+    assert outcome.status == "timeout"
+    assert outcome.execution_uncertain and outcome.terminal
+    assert _live_containers(runner) == []
+
+
+def test_execution_failure_is_not_terminal(tmp_path):
+    runner = FakeDockerRunner()
+    supervisor = _supervisor(tmp_path, runner)
+    runner.queue_exec(VALIDATION_OK)
+    runner.queue_exec("", returncode=1, stderr="ValueError: boom")
+
+    outcome = supervisor.run(
+        code="raise ValueError('boom')",
+        task_dir=_task_dir(tmp_path),
+        task_id="task-1",
+        call_id="call-1",
+        timeout=5,
+    )
+
+    assert outcome.status == "error"
+    assert outcome.terminal is False and outcome.execution_uncertain is False
+    assert outcome.exit_code == 1
+    assert "ValueError" in outcome.error
+    assert _live_containers(runner) == []
+
+
+def test_unconfirmed_removal_is_terminal(tmp_path):
+    runner = FakeDockerRunner()
+    supervisor = _supervisor(tmp_path, runner)
+    runner.queue_exec(VALIDATION_OK)
+    runner.queue_exec("ok\n")
+    runner.sticky_ids.add("fake-cid-1")
+
+    outcome = supervisor.run(
+        code="1", task_dir=_task_dir(tmp_path), task_id="task-1", call_id="call-1", timeout=5
+    )
+
+    assert outcome.status == "uncertain"
+    assert outcome.execution_uncertain and outcome.terminal
+    assert "removal not confirmed" in outcome.error
+
+
+def test_commit_rejection_is_terminal(tmp_path):
+    runner = FakeDockerRunner()
+    supervisor = _supervisor(tmp_path, runner)
+    layout = supervisor.workspace.prepare("call-1")
+    try:
+        os.symlink("elsewhere", layout.out / "link.txt")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not permitted on this host")
+    runner.queue_exec(VALIDATION_OK)
+    runner.queue_exec("ok\n")
+
+    outcome = supervisor.run(
+        code="1", task_dir=_task_dir(tmp_path), task_id="task-1", call_id="call-1", timeout=5
+    )
+
+    assert outcome.status == "uncertain"
+    assert outcome.execution_uncertain and outcome.terminal
+    assert "artifact commit rejected" in outcome.error
+
+
+def test_output_over_spool_limit_is_marked_truncated(tmp_path):
+    runner = FakeDockerRunner()
+    supervisor = _supervisor(tmp_path, runner, sandbox_output_spool_max_bytes=1024)
+    runner.queue_exec(VALIDATION_OK)
+    runner.queue_exec("x" * 5000 + "\n")
+
+    outcome = supervisor.run(
+        code="print('x' * 5000)",
+        task_dir=_task_dir(tmp_path),
+        task_id="task-1",
+        call_id="call-1",
+        timeout=5,
+    )
+
+    assert outcome.status == "ok"
+    assert outcome.output_truncated is True
+    assert "truncated" in outcome.stdout
+
+
+def test_timeout_outside_platform_limits_is_rejected(tmp_path):
+    runner = FakeDockerRunner()
+    supervisor = _supervisor(tmp_path, runner)
+
+    with pytest.raises(ValueError):
+        supervisor.run(
+            code="1", task_dir=_task_dir(tmp_path), task_id="task-1", call_id="call-1", timeout=100000
+        )
