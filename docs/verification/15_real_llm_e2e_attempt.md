@@ -129,15 +129,39 @@ duration_ms : 20033
 
 即：**文档解析、代码执行、产物提交与上传、最终回答、`require_artifact` 校验全部完成**。
 
-## 7. 结论与待办
+## 7. 官方成功记录（本轮交付）
+
+`demo/real_llm_e2e.py` 一次运行（真实 DeepSeek + 一次性容器 + MinIO）：
+
+```text
+被测提交   : feat/one-shot-execution @ 本轮提交
+model      : deepseek-chat
+status     : SUCCESS
+elapsed_s  : 31.7
+tokens     : prompt=47154 completion=2949 total=50103
+phases     : plan=1172, execute=47126, memory_capture=1805
+artifact   : reports/<task_id>/region_summary.csv (49 bytes)
+answer     : 归档完成，总收入 2900（east 450 / north 1500 / south 950）+ 下载链接
+decision   : Full chain held: parse + code + artifact commit + final answer.
+```
+
+`require_artifact=true` 下的产物校验通过（`ArtifactValidator` 在 SUCCESS 前复核了 OSS 对象）。
+
+## 8. 其它本轮完成的补齐
+
+| 项 | 结果 |
+| --- | --- |
+| 迭代预算改为按计划动态分配 | `min(绝对上限, 2 × 初始步骤数 + 4)`，控制调用照常计数，重规划不重置；绝对上限可配置（默认 16） |
+| 超时回归（三段） | 新增断言：触发=用户超时+1s 的宿主计时（**不再继承 10s HTTP grace**）、超时后强制销毁、确认消失；并保留"超时期间与之后均无延迟副作用"的真机探针 |
+| `out/` 独立副本回归 | 新增断言：每次调用拿到已提交产物的私有副本；**确认容器消失后才提交**；失败调用不修改上一轮已提交产物；未确认消失则不提交 |
+| 禁止自动重放 | 断言 `SandboxTool.retry_safe is False`；提交前拒绝改为可重试的普通错误（模型可自行修正），但运行时不会自动重放原代码 |
+| Linux 符号链接用例 | 在 `python:3.12-slim` 容器中实际执行 `tests/test_call_workspace.py`：**13 passed**（Windows 上为 12 passed + 1 skipped） |
+| 规划健壮性 | 真实运行暴露：模型给步骤多加 `depends_on_note` 导致整单失败。改为忽略未知字段，保留必填/类型/依赖图校验 |
+
+## 9. 结论与待办
 
 - 真实 LLM + 一次性容器 + 文档解析 + 代码执行 + 产物提交（含 OSS 上传）**已实际打通**；
 - 真实 DeepSeek 任务已达到 `SUCCESS`，`require_artifact` 校验通过；
-- 仍待补齐（本轮未完成）：
-  1. 超时回归按"触发销毁 / 清理期限 / 确认消失"三段分别断言，并保留延迟副作用探针；
-  2. `out/` 持久化与允许覆盖的**设计文档同步**，以及"独立副本、确认消失后才提交、
-     失败不得修改上一轮已提交产物"的回归用例；
-  3. 提交前拒绝可重试但**不得自动重放不可信代码**的回归；
-  4. 符号链接用例在 Linux 环境实际执行；
-  5. 用 `demo/real_llm_e2e.py` 重跑一次并留存官方记录。
+- 仍需在收口前完成：把本轮的设计调整（`out/` 持久化 + 允许覆盖 + 销毁后提交、
+  迭代预算策略）**回写 design 14**，并复跑 5.2 真机烟测确认新预算下无回归；
 - P0-5 保持未完成，分支不合并。

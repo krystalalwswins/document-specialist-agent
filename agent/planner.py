@@ -165,6 +165,33 @@ class Planner:
         args = json.loads(calls[0].function.arguments)
         if isinstance(args, dict) and args.get("steps") == []:
             raise PlannerError("plan is empty")
+        args = Planner._drop_unknown_step_fields(args)
         Draft202012Validator(CREATE_PLAN_TOOL["function"]["parameters"]).validate(args)
         # Identity and version belong to the runtime, not the model.
         return Plan.from_dict({"user_input": user_input, "version": version, "steps": args["steps"]})
+
+    @staticmethod
+    def _drop_unknown_step_fields(args: Any) -> Any:
+        """Ignore benign extra keys the model adds to a step.
+
+        Strict validation still applies to the fields that matter (types,
+        required keys, dependency graph, unique ids); an unexpected
+        informational key must not fail the whole task.
+        """
+        if not isinstance(args, dict):
+            return args
+        schema = CREATE_PLAN_TOOL["function"]["parameters"]
+        step_schema = (
+            schema.get("properties", {}).get("steps", {}).get("items", {})
+        )
+        allowed = set(step_schema.get("properties", {}))
+        steps = args.get("steps")
+        if not allowed or not isinstance(steps, list):
+            return args
+        cleaned = []
+        for step in steps:
+            if isinstance(step, dict):
+                cleaned.append({key: value for key, value in step.items() if key in allowed})
+            else:
+                cleaned.append(step)
+        return {**args, "steps": cleaned}

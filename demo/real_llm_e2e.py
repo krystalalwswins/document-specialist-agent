@@ -38,6 +38,11 @@ USER_INPUT = (
 
 
 def main() -> int:
+    # Model answers may contain any Unicode; a GBK console must not crash the run.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     settings = get_settings()
     print("model      :", settings.llm_model)
     print("api_key set:", bool(settings.llm_api_key), "(value never printed)")

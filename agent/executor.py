@@ -113,6 +113,8 @@ class Executor:
         registry: ToolRegistry,
         task_manager: TaskManager,
         max_iterations: int = 8,
+        iterations_per_step: int = 2,
+        iterations_overhead: int = 4,
         retry_policy: RetryPolicy | None = None,
         planner: Planner | None = None,
         max_replans: int = 2,
@@ -125,6 +127,8 @@ class Executor:
         self._registry = registry
         self._task_manager = task_manager
         self._max_iterations = max_iterations
+        self._iterations_per_step = iterations_per_step
+        self._iterations_overhead = iterations_overhead
         self._retry_policy = retry_policy or RetryPolicy()
         # None means "no local replanning configured": a request becomes an observation.
         self._planner = planner
@@ -176,7 +180,8 @@ class Executor:
             else None
         )
         replans_used = 0
-        for iteration in range(1, self._max_iterations + 1):
+        iteration_budget = self._iteration_budget(state.plan)
+        for iteration in range(1, iteration_budget + 1):
             force_compaction = (
                 self._budget_controller.before_call(
                     task_id, phase="execute", iteration=iteration
@@ -260,7 +265,23 @@ class Executor:
                 else:
                     state = self._run_tool_call(task_id, state, call, messages)
 
-        raise MaxIterationsError(f"exceeded {self._max_iterations} tool-calling iterations")
+        raise MaxIterationsError(
+            "exceeded %d tool-calling iterations (budget = min(%d, %d * steps + %d))"
+            % (
+                iteration_budget,
+                self._max_iterations,
+                self._iterations_per_step,
+                self._iterations_overhead,
+            )
+        )
+
+    def _iteration_budget(self, plan: Plan) -> int:
+        """min(absolute cap, per-step allowance) -- a policy, not a guarantee."""
+        steps = len(getattr(plan, "steps", []) or [])
+        if steps <= 0:
+            return self._max_iterations
+        allowance = self._iterations_per_step * steps + self._iterations_overhead
+        return max(1, min(self._max_iterations, allowance))
 
     def _llm_sink(
         self, task_id: str, *, phase: str, iteration: int | None = None

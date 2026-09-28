@@ -109,6 +109,7 @@ class FakeDockerRunner:
         self.image_present = image_present
         self.container_prefix = container_prefix
         self.calls: list[tuple[str, ...]] = []
+        self.timeouts: list[tuple[tuple[str, ...], float]] = []
         self.containers: dict[str, FakeContainer] = {}
         self.exec_queue: list[CommandResult] = []
         self.exec_default = CommandResult((), 0, "", "")
@@ -137,6 +138,7 @@ class FakeDockerRunner:
     def run(self, args: Sequence[str], *, timeout: float) -> CommandResult:
         argv = tuple(args)
         self.calls.append(argv)
+        self.timeouts.append((argv, timeout))
         for marker in self.timeout_markers:
             if marker in argv:
                 raise DockerTimeout("fake timeout on %r" % (marker,))

@@ -368,7 +368,10 @@ class ContainerSupervisor:
                 )
 
             if not executed.ok:
-                layout_kept = True  # keep logs for diagnosis; artifacts are discarded
+                # Failed calls leave nothing behind: the private copy of out/ is
+                # discarded, so a failed attempt can never modify the artifacts
+                # committed by earlier calls. (Successful calls keep their call
+                # directory as an audit record.)
                 return ExecutionOutcome(
                     status="error",
                     stdout=stdout,

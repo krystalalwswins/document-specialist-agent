@@ -263,3 +263,123 @@ def test_timeout_outside_platform_limits_is_rejected(tmp_path):
         supervisor.run(
             code="1", task_dir=_task_dir(tmp_path), task_id="task-1", call_id="call-1", timeout=100000
         )
+
+
+# --- timeout boundaries and artifact isolation -----------------------------
+
+
+def _exec_timeouts(runner: FakeDockerRunner) -> list[float]:
+    return [timeout for argv, timeout in runner.timeouts if argv and argv[0] == "exec" and "python3" in argv]
+
+
+def test_host_deadline_is_script_timeout_plus_kill_grace(tmp_path):
+    runner = FakeDockerRunner()
+    supervisor = _supervisor(tmp_path, runner, sandbox_http_grace=60)
+    runner.queue_exec(VALIDATION_OK)
+    runner.queue_exec("ok\n")
+
+    supervisor.run(
+        code="1", task_dir=_task_dir(tmp_path), task_id="task-1", call_id="call-1", timeout=5
+    )
+
+    # Trigger belongs to the host timer: 5s of user code + a small kill grace.
+    # It must NOT inherit the legacy HTTP grace (60s here), which would let code
+    # keep running long past the requested timeout.
+    assert _exec_timeouts(runner) == [6.0]
+
+
+def test_timeout_destroys_container_and_never_commits(tmp_path):
+    runner = FakeDockerRunner()
+    supervisor = _supervisor(tmp_path, runner)
+    task_dir = _task_dir(tmp_path)
+    artifact_dir = task_dir / "out"
+    artifact_dir.mkdir()
+    (artifact_dir / "previous.txt").write_text("previous", encoding="utf-8")
+    runner.queue_exec(VALIDATION_OK)
+    runner.queue_exec("partial\n")
+    runner.timeout_markers = {"python3"}
+
+    outcome = supervisor.run(
+        code="while True: pass",
+        task_dir=task_dir,
+        task_id="task-1",
+        call_id="call-1",
+        timeout=2,
+    )
+
+    assert outcome.status == "timeout" and outcome.terminal
+    # Removal is forced before anything could be committed.
+    assert any(argv[0] == "rm" for argv in runner.calls)
+    assert _live_containers(runner) == []
+    assert sorted(p.name for p in artifact_dir.iterdir()) == ["previous.txt"]
+    assert (artifact_dir / "previous.txt").read_text(encoding="utf-8") == "previous"
+
+
+def test_failed_call_preserves_previous_artifacts(tmp_path):
+    runner = FakeDockerRunner()
+    supervisor = _supervisor(tmp_path, runner)
+    task_dir = _task_dir(tmp_path)
+    artifact_dir = task_dir / "out"
+    artifact_dir.mkdir()
+    (artifact_dir / "previous.txt").write_text("previous", encoding="utf-8")
+    runner.queue_exec(VALIDATION_OK)
+    runner.queue_exec("", returncode=1, stderr="boom")
+
+    outcome = supervisor.run(
+        code="raise ValueError('boom')",
+        task_dir=task_dir,
+        task_id="task-1",
+        call_id="call-1",
+        timeout=5,
+    )
+
+    assert outcome.status == "error"
+    assert sorted(p.name for p in artifact_dir.iterdir()) == ["previous.txt"]
+    assert not (tmp_path / "calls" / "call-1").exists()  # private copy discarded
+
+
+def test_unconfirmed_removal_blocks_the_commit(tmp_path):
+    runner = FakeDockerRunner()
+    supervisor = _supervisor(tmp_path, runner)
+    task_dir = _task_dir(tmp_path)
+    layout = supervisor.workspace.prepare("call-1")
+    (layout.out / "new.txt").write_text("new", encoding="utf-8")
+    runner.queue_exec(VALIDATION_OK)
+    runner.queue_exec("ok\n")
+    runner.sticky_ids.add("fake-cid-1")
+
+    outcome = supervisor.run(
+        code="1", task_dir=task_dir, task_id="task-1", call_id="call-1", timeout=5
+    )
+
+    assert outcome.status == "uncertain" and outcome.terminal
+    assert not (task_dir / "out" / "new.txt").exists()
+
+
+def test_call_gets_a_private_copy_of_committed_artifacts(tmp_path):
+    runner = FakeDockerRunner()
+    supervisor = _supervisor(tmp_path, runner)
+    task_dir = _task_dir(tmp_path)
+    artifact_dir = task_dir / "out"
+    artifact_dir.mkdir()
+    (artifact_dir / "seed.txt").write_text("seed", encoding="utf-8")
+    runner.queue_exec(VALIDATION_OK)
+    runner.queue_exec("ok\n")
+
+    outcome = supervisor.run(
+        code="1", task_dir=task_dir, task_id="task-1", call_id="call-1", timeout=5
+    )
+
+    assert outcome.status == "ok"
+    # The call ran against its own copy, so stable paths work without touching
+    # previously committed artifacts.
+    assert (tmp_path / "calls" / "call-1" / "out" / "seed.txt").read_text(encoding="utf-8") == "seed"
+    assert (artifact_dir / "seed.txt").read_text(encoding="utf-8") == "seed"
+
+
+def test_untrusted_code_is_never_auto_replayed():
+    from tools.sandbox_tool import SandboxTool
+
+    # A rejected commit is retryable by the model, but the runtime must not
+    # replay the original code by itself.
+    assert SandboxTool.retry_safe is False

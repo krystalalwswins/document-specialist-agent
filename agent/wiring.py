@@ -117,6 +117,8 @@ def build_orchestrator(settings: Settings | None = None) -> AgentOrchestrator:
         registry,
         task_manager,
         max_iterations=settings.executor_max_iterations,
+        iterations_per_step=settings.executor_iterations_per_step,
+        iterations_overhead=settings.executor_iterations_overhead,
         planner=planner,
         after_tool_call=after_tool_call,
         context_manager=context_manager,

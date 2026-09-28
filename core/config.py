@@ -207,7 +207,14 @@ class Settings(BaseSettings):
     # Tool-calling rounds allowed per execution attempt. The one-shot sandbox
     # needs a little headroom: the model may spend a round discovering that the
     # task directory is read-only and that artifacts belong under out/.
-    executor_max_iterations: int = Field(default=12, ge=1)
+    # Absolute cap on main-model rounds per execution attempt. The effective
+    # budget is min(cap, 2 * initial plan steps + 4): control calls are real model
+    # rounds too, so they stay counted, but a six-step plan legitimately needs more
+    # than a flat budget. Replanning never resets or grows the budget, and the
+    # token hard budget still applies independently.
+    executor_max_iterations: int = Field(default=16, ge=1)
+    executor_iterations_per_step: int = Field(default=2, ge=1)
+    executor_iterations_overhead: int = Field(default=4, ge=0)
 
 
 @lru_cache(maxsize=1)
