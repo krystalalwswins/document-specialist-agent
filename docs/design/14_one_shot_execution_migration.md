@@ -1,6 +1,8 @@
 # Design Note 14：一次性容器执行链路（迁移成本核算 + 设计）
 
-> 状态：**设计提案（已按第一次评审修订），未实现**
+> 状态：**已冻结（2026-09-28），未实现**
+> 冻结记录：第一次评审为有条件通过（7 项修订），第二次评审确认达到冻结标准；
+> 实现分支：`feat/one-shot-execution`
 > 上游证据：[`../verification/12_one_shot_container_probe.md`](../verification/12_one_shot_container_probe.md)、
 > [`../verification/13_jupyter_dependency_audit.md`](../verification/13_jupyter_dependency_audit.md)
 > 本文不改动任何生产代码；评审通过后才建立 `feat/one-shot-execution` 分支。
@@ -312,6 +314,14 @@
 
 `python -m pytest -q` 全部通过（当前基线 `364 passed, 1 skipped`），
 并重新执行 Harness V1 八条端到端场景。
+
+### 5.4 实现验收点（第二次评审补充）
+
+1. **排空管道**：stdout/stderr 超过 spool 上限（默认 32 MB）后虽然丢弃尾部，监督器仍必须
+   持续把管道读干，避免子进程因管道写满而假死。
+2. **幂等提交**：目标文件与来源内容逐字节相同时按幂等 no-op 处理，**不计为一次真正的覆盖**。
+3. **清理竞态**：`OrphanSweeper` 在清理前必须确保不会与仍在执行的合法容器发生竞态
+   （按标签、TTL 与任务状态三重判定），并且始终按精确 Container ID 验证消失。
 
 ---
 
