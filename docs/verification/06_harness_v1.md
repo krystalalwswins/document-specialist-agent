@@ -179,6 +179,25 @@ AssertionError: [error] Code execution error
 exit_code=1
 ```
 
+该断言与镜像实际行为不符，属于测量工具本身的缺陷，已先行修复（见 5.3.3）。修复后
+重跑，失败原因变为真实问题：
+
+```text
+PASS running container quotas: {'Memory': 4294967296, 'NanoCpus': 2000000000, 'PidsLimit': 512, 'MemorySwap': 4294967296}
+PASS real file write/read
+PASS traversal denied
+PASS independent Jupyter sessions
+PASS sandbox reported a non-ok status (observed='error')
+PASS sandbox envelope reported success=false (observed=False)
+PASS client marked the result execution_uncertain (observed=True)
+PASS Harness maps it to a failed ToolResult (observed=False)
+PASS Harness marks it terminal, so it is never replayed (observed=True)
+     status='error' error='Code execution error' elapsed=3.49s
+FAIL delayed side effect exists: the timed-out execution kept running past the requested timeout (1s) and wrote /home/gem/workspace/security-probe-...-late.txt
+FAIL real smoke checks: delayed side effect after timeout
+exit_code=1
+```
+
 #### 5.3.1 根因诊断
 
 用一次性探针固定请求的 `timeout`、改变被测代码的 `sleep` 时长，记录调用耗时、返回状态
@@ -186,6 +205,7 @@ exit_code=1
 
 | 代码 sleep | 请求 timeout | 实际耗时 | 返回 status | 延迟副作用文件 |
 | --- | --- | --- | --- | --- |
+| 3s | 1s | 3.49s | `error`（`execution_uncertain=True`） | **存在** |
 | 2s | 1s | 2.56s | `error`（`execution_uncertain=True`） | **存在** |
 | 6s | 1s | 6.62s | `error`（`execution_uncertain=True`） | **存在** |
 | 12s | 1s | 6.60s | `error`（`execution_uncertain=True`） | 不存在 |
@@ -204,8 +224,26 @@ exit_code=1
    它落在有效终止点之前还是之后。
 3. 该镜像返回 `success=false` + `KernelError`，`SandboxClient._normalize` 走
    "success 为 False"分支，映射为 `status="error"`、`execution_uncertain=True`。
-   所以 `demo/security_smoke.py` 里 `status == "timeout"` 的断言在 1.11.0 上**永远不成立**，
-   脚本必然失败；这是脚本与当前服务端行为不一致，需要单独修订。
+   原 `demo/security_smoke.py` 里 `status == "timeout"` 的断言在 1.11.0 上**永远不成立**，
+   脚本会在真正的安全断言之前中止——测量工具缺陷，已修复（见 5.3.3）。
+
+#### 5.3.3 烟测脚本修订（已完成）
+
+修订前的脚本用 `assert response.status == "timeout"` 判定超时，会被状态映射差异提前
+截断，导致下面真正的"延迟副作用仍发生"无法被稳定检测。修订后的判定逻辑：
+
+1. 不再要求 `status == "timeout"`，把 `error` 与 `timeout` 都视为非成功结果；
+2. 核心契约断言改为：非 `ok` 状态、原始信封 `success is False`、
+   `execution_uncertain is True`、`execution_to_tool_result` 返回失败且 `terminal is True`
+   （即 Harness 判为终止性错误、禁止重放）；
+3. **无论状态如何映射**，都继续等待到"代码延迟 + 余量"之后再检查延迟副作用文件；
+4. 只要延迟副作用文件存在，脚本仍然失败并给出明确原因。
+
+探针参数同时从 `sleep 6 / timeout 1` 改为 `sleep 3 / timeout 1`：原来的组合恰好落在服务端
+有效终止点附近，属于边界竞态；3 秒的副作用稳定落在终止点之前，失败可复现而非偶然。
+
+> 这一步是校准测量工具，**不代表接受当前风险**。修复后脚本依然失败，且失败原因正是
+> 真正的安全问题；P0-5 继续保持未完成。
 
 #### 5.3.2 5.2 节逐项判定
 
@@ -216,7 +254,7 @@ exit_code=1
 | 文件写入/读取、越界路径拒绝、独立执行会话通过 | 通过 |
 | timeout 返回明确的超时或不确定状态 | 部分通过：wrapper 标记 `execution_uncertain=True`，但 `status` 为 `error` 而非 `timeout` |
 | timeout 探针等待后，延迟副作用文件不存在 | **不通过**（见 5.3.1） |
-| 脚本退出码为 0 | **不通过**（退出码 1） |
+| 脚本退出码为 0 | **不通过**（退出码 1；修订后失败原因为"延迟副作用仍存在"，不再是状态断言） |
 
 > 分层结论（重要）：`tools/sandbox_tool.py` 使用
 > `terminal = execution_uncertain or status == "timeout"` 判定，因此在上述场景中工具错误
@@ -243,12 +281,15 @@ exit_code=1
 5. 验收后工作区无意外改动。
 
 本次（2026-09-28）达成情况：条件 1、2、4、5 满足；**条件 3 不满足**。Docker 已可用，
-5.1 节命令全部执行，但 `security_smoke` 退出码为 1，`timeout` 探针未通过（见 5.3）。
+5.1 节命令全部执行，`security_smoke` 退出码为 1，`timeout` 探针未通过（见 5.3）。
 因此本页结论是"八条离线端到端场景通过、真实沙箱超时语义不满足 5.2 节要求"，
-`task_points.md` 中 P0-5 仍不能标记为已完成，且需要先处理下列之一：
+`task_points.md` 中 P0-5 仍不能标记为已完成。
 
-1. 修订 `demo/security_smoke.py`，使其断言与镜像实际返回的
-   `success=false` + `execution_uncertain=True` 一致；并
-2. 决定是否需要把"沙箱在请求超时点真正停下代码"作为硬性安全需求——若需要，则应在
-   `SandboxClient`/工具层之上增加真正的执行上限（例如在沙箱内部用子进程 + 硬超时包裹
-   用户代码），而不是依赖 `execute_code(timeout=...)` 的服务端语义。
+剩余工作分两步，且**不能**用第一步代替第二步：
+
+1. ~~修订 `demo/security_smoke.py`，使其断言与镜像实际返回的
+   `success=false` + `execution_uncertain=True` 一致。~~ 已完成（见 5.3.3），
+   脚本现在准确报告失败原因；
+2. 作为独立安全任务处理真正的语义问题：把"沙箱在请求超时点停下代码"变成硬性保证，
+   而不是依赖 `execute_code(timeout=...)` 的服务端语义。修复前 P0-5 不得收口，
+   也不得把本页任何一项标记为完全通过。
