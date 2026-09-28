@@ -3,8 +3,9 @@
 > 记录日期：2026-09-18  
 > 实现分支：`feat/harness-p0-5`  
 > 开发基线：`feat/harness-p0-4` / `195ba1d`  
-> 当前状态：离线回归已于 2026-09-28 执行并通过（见 4.2 节）；真实 Docker 烟测因验收机
-> 未安装 Docker 而**未执行**（见 5.3 节），P0-5 尚未收口。
+> 当前状态：离线回归已于 2026-09-28 执行并通过（见 4.2 节）；真实 Docker 烟测同日已
+> 执行但**未通过**——`security_smoke` 退出码 1，`timeout` 探针暴露"超时不是硬上限"
+> （见 5.3 节），P0-5 尚未收口。
 
 本文档是一次验收记录，不是对
 [`01_security.md`](01_security.md) 的覆盖或改写。`01_security.md` 保留当时的历史结论；
@@ -18,9 +19,9 @@
 | 工作区状态 | 执行测试时为空；随后仅新增本验收记录文件 |
 | 操作系统 | Windows 11 25H2（build 26200） |
 | Python / pytest | 3.13.2（工作区 `.venv`）/ 9.1.1 |
-| Docker Engine / Compose | **不可用**：验收机未安装 `docker` 命令，第 5 节未执行 |
+| Docker Engine / Compose | 29.7.2 / v5.4.0（Docker Desktop 4.87.0），第 5 节已执行 |
 | `agent-sandbox` SDK | `0.0.30`（`requirements.txt` 锁定） |
-| 沙箱镜像 tag / image ID | 未验证（Docker 不可用） |
+| 沙箱镜像 tag / image ID | `...all-in-one-sandbox:1.11.0` / `sha256:6328d7fd2f0ff0b4c147c3d05b3df1ce331f4a482eb6e550ecd64ed1fcf906e7` |
 
 验收者必须在执行命令前填写准确 SHA，并在完成后附上 `git status --short`。
 禁止将未执行的项目填写为 PASS。
@@ -145,20 +146,82 @@ docker inspect doc-agent-sandbox
 
 ### 5.3 结果
 
-- `security_smoke`：`NOT RUN`
-- timeout probe：`NOT RUN`
-- 退出码：`N/A`
+- `security_smoke`：**FAILED**（退出码 `1`，中止在 timeout 探针断言）
+- timeout probe：**不通过**：请求的 `timeout` 不是执行硬上限，延迟副作用仍会落地
+- 退出码：`1`
 
-完整输出：
+实测环境：
+
+| 项目 | 值 |
+| --- | --- |
+| Docker Client / Server | 29.7.2 / 29.7.2（Docker Desktop 4.87.0，Engine API 1.55） |
+| Docker Compose | v5.4.0 |
+| 沙箱镜像 | `enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:1.11.0` |
+| 镜像 image ID | `sha256:6328d7fd2f0ff0b4c147c3d05b3df1ce331f4a482eb6e550ecd64ed1fcf906e7` |
+| 容器实测配额 | Memory `4294967296`；MemorySwap == Memory；PidsLimit `512`；NanoCpus `2000000000`（2 CPU） |
+| 端口绑定 | `127.0.0.1:8080 -> 8080/tcp`（仅本机） |
+| 容器健康 | `healthy` |
+| `agent-sandbox` SDK | `0.0.30` |
+
+`.venv\Scripts\python.exe -m demo.security_smoke` 原始输出：
 
 ```text
-docker: The term 'docker' is not recognized as a name of a cmdlet, function, script file,
-or executable program. Check the spelling of the name, or if a path was included, verify
-that the path is correct and try again.
+PASS running container quotas: {'Memory': 4294967296, 'NanoCpus': 2000000000, 'PidsLimit': 512, 'MemorySwap': 4294967296}
+PASS real file write/read
+PASS traversal denied
+PASS independent Jupyter sessions
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  ...
+  File "D:\gitcode\document-specialist-agent\demo\security_smoke.py", line 54, in main
+    assert response.status == "timeout" and response.execution_uncertain, response.text
+AssertionError: [error] Code execution error
+exit_code=1
 ```
 
-验收机未安装 Docker Engine / Compose，5.1 节的前置检查无法通过。按本页"禁止将未执行
-的项目填写为 PASS"的要求，第 5 节整体记录为 `NOT RUN`，既不记为通过，也不记为失败。
+#### 5.3.1 根因诊断
+
+用一次性探针固定请求的 `timeout`、改变被测代码的 `sleep` 时长，记录调用耗时、返回状态
+与"延迟副作用文件"是否出现（探针为临时文件，取证后已删除）：
+
+| 代码 sleep | 请求 timeout | 实际耗时 | 返回 status | 延迟副作用文件 |
+| --- | --- | --- | --- | --- |
+| 2s | 1s | 2.56s | `error`（`execution_uncertain=True`） | **存在** |
+| 6s | 1s | 6.62s | `error`（`execution_uncertain=True`） | **存在** |
+| 12s | 1s | 6.60s | `error`（`execution_uncertain=True`） | 不存在 |
+| 12s | 8s | 12.53s | `error`（`execution_uncertain=True`） | **存在** |
+
+原始响应体为 `ResponseJupyterExecuteResponse(success=False, message="Code execution error")`，
+`data.status="error"`，`outputs[0]` 为 `output_type="error"`、`ename="KernelError"`、
+`evalue=""`。
+
+结论：
+
+1. `timeout` **不是**执行硬上限。请求 1 秒时，2 秒与 6 秒的代码仍完整跑到结束并产生
+   副作用；请求 8 秒时，12 秒的代码同样跑完。有效终止点约在"请求值 + 数秒"处，与请求
+   值并不同步，也不受调用方精确控制。
+2. 因此 5.2 节"timeout 探针等待后延迟副作用文件不存在"**不成立**：副作用是否发生取决于
+   它落在有效终止点之前还是之后。
+3. 该镜像返回 `success=false` + `KernelError`，`SandboxClient._normalize` 走
+   "success 为 False"分支，映射为 `status="error"`、`execution_uncertain=True`。
+   所以 `demo/security_smoke.py` 里 `status == "timeout"` 的断言在 1.11.0 上**永远不成立**，
+   脚本必然失败；这是脚本与当前服务端行为不一致，需要单独修订。
+
+#### 5.3.2 5.2 节逐项判定
+
+| 5.2 节要求 | 结果 |
+| --- | --- |
+| CPU、内存、swap、PID 配额与 compose 配置一致 | 通过 |
+| 宿主端口绑定符合本地安全配置 | 通过（仅 `127.0.0.1:8080`） |
+| 文件写入/读取、越界路径拒绝、独立执行会话通过 | 通过 |
+| timeout 返回明确的超时或不确定状态 | 部分通过：wrapper 标记 `execution_uncertain=True`，但 `status` 为 `error` 而非 `timeout` |
+| timeout 探针等待后，延迟副作用文件不存在 | **不通过**（见 5.3.1） |
+| 脚本退出码为 0 | **不通过**（退出码 1） |
+
+> 分层结论（重要）：`tools/sandbox_tool.py` 使用
+> `terminal = execution_uncertain or status == "timeout"` 判定，因此在上述场景中工具错误
+> **仍然是终止性错误**，任务不会重放这段代码——Harness 层的"不确定即终止、禁止重放"
+> 成立。不成立的是更下面一层：沙箱没有在请求的超时点真正停下代码，副作用仍可能落地。
 
 ## 6. 必须保留的安全边界
 
@@ -179,6 +242,13 @@ that the path is correct and try again.
 4. 本页填入准确环境、SHA 与完整输出；
 5. 验收后工作区无意外改动。
 
-本次（2026-09-28）达成情况：条件 1、2、4、5 满足；**条件 3 不满足**，因为验收机没有
-Docker，真实沙箱烟测未执行。因此本页结论是"八条离线端到端场景通过、真实 Docker
-验证缺口仍在"，`task_points.md` 中 P0-5 尚不能标记为已完成。
+本次（2026-09-28）达成情况：条件 1、2、4、5 满足；**条件 3 不满足**。Docker 已可用，
+5.1 节命令全部执行，但 `security_smoke` 退出码为 1，`timeout` 探针未通过（见 5.3）。
+因此本页结论是"八条离线端到端场景通过、真实沙箱超时语义不满足 5.2 节要求"，
+`task_points.md` 中 P0-5 仍不能标记为已完成，且需要先处理下列之一：
+
+1. 修订 `demo/security_smoke.py`，使其断言与镜像实际返回的
+   `success=false` + `execution_uncertain=True` 一致；并
+2. 决定是否需要把"沙箱在请求超时点真正停下代码"作为硬性安全需求——若需要，则应在
+   `SandboxClient`/工具层之上增加真正的执行上限（例如在沙箱内部用子进程 + 硬超时包裹
+   用户代码），而不是依赖 `execute_code(timeout=...)` 的服务端语义。
