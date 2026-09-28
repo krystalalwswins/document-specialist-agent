@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     # depth is still bounded inside CallWorkspace.
     sandbox_commit_allow_nested: bool = True
     sandbox_orphan_ttl_seconds: int = Field(default=300, ge=1)
+    # After the user timeout fires the supervisor force-removes the container and
+    # waits at most this long for the removal to be *confirmed*. Confirmation
+    # decides between "timeout" and "uncertain"; it never extends the runtime.
+    sandbox_cleanup_confirm_seconds: float = Field(default=1.0, gt=0, le=30)
     # Startup lifecycle must call ContainerSupervisor.preflight() explicitly; the
     # constructors themselves stay Docker-free so offline tests are unaffected.
     sandbox_preflight_on_startup: bool = True

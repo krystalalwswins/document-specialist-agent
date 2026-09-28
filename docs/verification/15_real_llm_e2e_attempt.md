@@ -158,10 +158,47 @@ decision   : Full chain held: parse + code + artifact commit + final answer.
 | Linux 符号链接用例 | 在 `python:3.12-slim` 容器中实际执行 `tests/test_call_workspace.py`：**13 passed**（Windows 上为 12 passed + 1 skipped） |
 | 规划健壮性 | 真实运行暴露：模型给步骤多加 `depends_on_note` 导致整单失败。改为忽略未知字段，保留必填/类型/依赖图校验 |
 
-## 9. 结论与待办
+## 9. 验收偏差纠正（本轮）
+
+1. **超时语义纠正。** 此前实现为"宿主计时 = 用户超时 + 1s"，即用户代码实际多跑 1 秒，
+   与约定不符。现改为：宿主计时器**等于用户超时本身**，到点立即强制销毁；随后最多 1 秒
+   （`SANDBOX_CLEANUP_CONFIRM_SECONDS`）用于**确认容器消失**，超窗未确认即返回不确定状态
+   并禁止重放。回归按触发 / 清理窗口 / 确认消失三段分别断言：
+   `test_destroy_triggers_exactly_at_the_user_timeout`、
+   `test_confirmed_cleanup_reports_timeout_without_extra_runtime`、
+   `test_unconfirmed_cleanup_inside_the_window_is_uncertain`，真机烟测保留延迟副作用探针。
+2. **Linux 符号链接覆盖补齐为 3 项**（此前只跑了 1 项）：
+
+   | 测试 | Linux 结果 |
+   | --- | --- |
+   | `tests/test_call_workspace.py::test_rejects_symlinked_artifact` | PASSED |
+   | `tests/test_container_supervisor.py::test_commit_rejection_is_a_retryable_error` | PASSED |
+   | `tests/test_security.py::test_remote_path_guard_checks_real_symlinks` | PASSED |
+
+   运行环境：`python:3.12-slim` + `pip install -r requirements.txt`，结果 `3 passed in 3.71s`。
+3. **Planner 未知字段回归**：新增用例覆盖"未知字段被忽略且不进入执行逻辑"（`depends_on_note`），
+   同时保留"缺必填 / 类型错误 / 非法依赖仍被拒绝"三条拒绝路径。
+4. **超时修正后复跑真机烟测**：**14/14 通过**（这是本次重跑烟测的唯一原因，与迭代预算改动无关）。
+
+## 10. 结论与待办
 
 - 真实 LLM + 一次性容器 + 文档解析 + 代码执行 + 产物提交（含 OSS 上传）**已实际打通**；
 - 真实 DeepSeek 任务已达到 `SUCCESS`，`require_artifact` 校验通过；
-- 仍需在收口前完成：把本轮的设计调整（`out/` 持久化 + 允许覆盖 + 销毁后提交、
-  迭代预算策略）**回写 design 14**，并复跑 5.2 真机烟测确认新预算下无回归；
-- P0-5 保持未完成，分支不合并。
+- 设计调整（`out/` 私有副本与覆盖规则、销毁后提交、失败保护、超时三段语义、迭代预算）
+  已回写 design 14 §3.13；超时修正后真机烟测 14/14；
+- 全量离线回归 441 passed / 3 skipped；Linux 符号链接 3/3 实际执行通过；
+- 据此判定：**P0-5 的验收条件已全部满足**，结论见下节。本分支仍**不合并 main**（按你的指示）。
+
+## 11. P0-5 收口结论
+
+| 收口条件（`06_harness_v1.md` §7） | 结果 |
+| --- | --- |
+| 1. 八条 Harness V1 聚焦场景全部通过 | 通过（`tests/test_harness_v1_scenarios.py` 8 passed） |
+| 2. 完整 pytest 回归通过（跳过项有可复现说明） | 通过（441 passed / 3 skipped，3 项为本机 Windows 无符号链接权限，已在 Linux 实跑通过） |
+| 3. 真实 Docker 安全烟测退出码 0，timeout probe 通过 | 通过（14/14，含超时零延迟副作用） |
+| 4. 记录环境、SHA 与完整输出 | 见 `06`、`10`、`11`、`12`、`14`、本页 |
+| 5. 验收后工作区无意外改动 | 通过（提交后工作区干净） |
+
+额外：真实 DeepSeek 端到端成功（`SUCCESS`，产物校验通过），Jupyter 依赖审计与一次性容器
+设计均已有实测证据。**判定：P0-5 满足收口条件**，可在合并 `main` 后按流程把
+`task_points.md` 中 P0-5 标记为已完成。当前按要求暂不合并。

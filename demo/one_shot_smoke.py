@@ -104,14 +104,14 @@ def main() -> int:
     record("trailing expression echoed", "'done'" in outcome.stdout, outcome.stdout.strip()[-40:])
     record(
         "artifact committed to task dir",
-        (task_dir / "report.txt").exists()
-        and (task_dir / "report.txt").read_text(encoding="utf-8") == "artifact",
-        str(task_dir / "report.txt"),
+        (task_dir / "out" / "report.txt").exists()
+        and (task_dir / "out" / "report.txt").read_text(encoding="utf-8") == "artifact",
+        str(task_dir / "out" / "report.txt"),
     )
     record("container removed after success", outcome.container_id == "", "container_id cleared")
 
     # 3. timeout: no delayed side effect, container gone ---------------------
-    marker = task_dir / "late.txt"
+    marker = task_dir / "out" / "late.txt"
     result = call(
         "import time\n"
         "from pathlib import Path\n"
@@ -128,7 +128,7 @@ def main() -> int:
     record("no delayed side effect after timeout", not marker.exists(), str(marker))
 
     # 4. detached child attempt (start_new_session) -------------------------
-    detached_marker = task_dir / "detached.txt"
+    detached_marker = task_dir / "out" / "detached.txt"
     child = (
         "import time\nfrom pathlib import Path\n"
         "time.sleep(%d)\nPath('out/detached.txt').write_text('x', encoding='utf-8')\n"

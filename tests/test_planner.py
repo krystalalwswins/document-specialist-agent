@@ -40,6 +40,53 @@ def test_plan_parses_steps_from_tool_call():
     assert plan.steps[0].step_id == "read"
     assert plan.steps[0].completion_criteria == ["File content available"]
     assert plan.version == 1
+
+
+def _plan_args(**step_overrides):
+    step = {
+        "step_id": "read",
+        "name": "read",
+        "description": "read file",
+        "tool": "file_tool",
+        "depends_on": [],
+        "completion_criteria": ["File content available"],
+    }
+    step.update(step_overrides)
+    return json.dumps({"steps": [step]})
+
+
+def test_unknown_step_fields_are_ignored_not_executed():
+    # Real DeepSeek output added `depends_on_note`; it must not fail the task and
+    # must not leak into the runtime plan either.
+    llm = FakeLLM(
+        _message(tool_calls=[_tool_call("create_plan", _plan_args(depends_on_note="n/a"))])
+    )
+    plan = Planner(llm).plan("analyze excel")
+    assert plan.steps[0].step_id == "read"
+    assert "depends_on_note" not in plan.to_dict()["steps"][0]
+
+
+def test_missing_required_step_field_is_still_rejected():
+    args = json.dumps({"steps": [{"step_id": "read", "name": "read", "depends_on": []}]})
+    llm = FakeLLM(_message(tool_calls=[_tool_call("create_plan", args)]))
+    with pytest.raises(PlannerError):
+        Planner(llm).plan("analyze excel")
+
+
+def test_wrong_step_field_type_is_still_rejected():
+    llm = FakeLLM(
+        _message(tool_calls=[_tool_call("create_plan", _plan_args(depends_on="read"))])
+    )
+    with pytest.raises(PlannerError):
+        Planner(llm).plan("analyze excel")
+
+
+def test_invalid_dependency_is_still_rejected():
+    llm = FakeLLM(
+        _message(tool_calls=[_tool_call("create_plan", _plan_args(depends_on=["missing"]))])
+    )
+    with pytest.raises(PlannerError):
+        Planner(llm).plan("analyze excel")
     assert llm.calls[0]["tool_choice"]["function"]["name"] == "create_plan"
 
 

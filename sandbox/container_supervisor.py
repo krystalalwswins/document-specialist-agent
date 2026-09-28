@@ -32,7 +32,6 @@ VERIFY_POLL_SECONDS = 0.2
 # Small margin over the requested timeout so a script that finishes right on
 # time is not killed, while the host timer stays the real bound. This is NOT the
 # legacy HTTP grace (10s), which would let a timeout overrun unnoticed.
-EXEC_KILL_GRACE_SECONDS = 1.0
 
 
 class SandboxUnavailable(RuntimeError):
@@ -81,14 +80,18 @@ class ContainerSupervisor:
         settings: Settings,
         *,
         workspace: Optional[CallWorkspace] = None,
-        cleanup_deadline_seconds: float = CLEANUP_DEADLINE_SECONDS,
+        cleanup_deadline_seconds: Optional[float] = None,
     ) -> None:
         self._runner = runner
         self._settings = settings
         self._workspace = workspace or CallWorkspace(
             settings.sandbox_call_root, allow_nested=settings.sandbox_commit_allow_nested
         )
-        self._cleanup_deadline_seconds = cleanup_deadline_seconds
+        self._cleanup_deadline_seconds = (
+            cleanup_deadline_seconds
+            if cleanup_deadline_seconds is not None
+            else settings.sandbox_cleanup_confirm_seconds
+        )
 
     @property
     def workspace(self) -> CallWorkspace:
@@ -334,7 +337,9 @@ class ContainerSupervisor:
                         container_id,
                         "python3", RUNNER_PATH_IN_CONTAINER,
                     ],
-                    timeout=script_timeout + EXEC_KILL_GRACE_SECONDS,
+                    # The host timer fires exactly at the user timeout: the
+                    # container is destroyed at that moment, not a second later.
+                    timeout=script_timeout,
                 )
             except DockerTimeout:
                 gone = self._destroy(container_id)
@@ -346,7 +351,10 @@ class ContainerSupervisor:
                     terminal=True,
                 )
                 if not gone:
-                    outcome.error += "; container removal not confirmed"
+                    outcome.error += (
+                        "; the cleanup confirm window (%.1fs) elapsed first"
+                        % self._cleanup_deadline_seconds
+                    )
                 return outcome
 
             stdout, stdout_truncated = self._spool(executed.stdout, layout.stdout_path)

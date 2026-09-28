@@ -272,7 +272,7 @@ def _exec_timeouts(runner: FakeDockerRunner) -> list[float]:
     return [timeout for argv, timeout in runner.timeouts if argv and argv[0] == "exec" and "python3" in argv]
 
 
-def test_host_deadline_is_script_timeout_plus_kill_grace(tmp_path):
+def test_destroy_triggers_exactly_at_the_user_timeout(tmp_path):
     runner = FakeDockerRunner()
     supervisor = _supervisor(tmp_path, runner, sandbox_http_grace=60)
     runner.queue_exec(VALIDATION_OK)
@@ -282,10 +282,41 @@ def test_host_deadline_is_script_timeout_plus_kill_grace(tmp_path):
         code="1", task_dir=_task_dir(tmp_path), task_id="task-1", call_id="call-1", timeout=5
     )
 
-    # Trigger belongs to the host timer: 5s of user code + a small kill grace.
-    # It must NOT inherit the legacy HTTP grace (60s here), which would let code
-    # keep running long past the requested timeout.
-    assert _exec_timeouts(runner) == [6.0]
+    # The host timer fires at the requested timeout itself; the extra second is
+    # only the window for confirming cleanup, never extra runtime for the code.
+    # It must also not inherit the legacy HTTP grace (60s here).
+    assert _exec_timeouts(runner) == [5.0]
+
+
+def test_unconfirmed_cleanup_inside_the_window_is_uncertain(tmp_path):
+    runner = FakeDockerRunner()
+    supervisor = _supervisor(tmp_path, runner)  # cleanup window = 0.4s
+    runner.queue_exec(VALIDATION_OK)
+    runner.timeout_markers = {"python3"}
+    runner.sticky_ids.add("fake-cid-1")
+
+    outcome = supervisor.run(
+        code="while True: pass", task_dir=_task_dir(tmp_path), task_id="task-1", call_id="call-1", timeout=2
+    )
+
+    assert outcome.status == "timeout"
+    assert outcome.execution_uncertain and outcome.terminal
+    assert "cleanup confirm window" in outcome.error
+
+
+def test_confirmed_cleanup_reports_timeout_without_extra_runtime(tmp_path):
+    runner = FakeDockerRunner()
+    supervisor = _supervisor(tmp_path, runner)
+    runner.queue_exec(VALIDATION_OK)
+    runner.timeout_markers = {"python3"}
+
+    outcome = supervisor.run(
+        code="while True: pass", task_dir=_task_dir(tmp_path), task_id="task-1", call_id="call-1", timeout=2
+    )
+
+    assert outcome.status == "timeout"
+    assert "cleanup confirm window" not in outcome.error
+    assert _live_containers(runner) == []
 
 
 def test_timeout_destroys_container_and_never_commits(tmp_path):
