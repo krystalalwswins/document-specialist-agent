@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import time
 import uuid
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -84,7 +85,9 @@ class ContainerSupervisor:
     ) -> None:
         self._runner = runner
         self._settings = settings
-        self._workspace = workspace or CallWorkspace(settings.sandbox_call_root)
+        self._workspace = workspace or CallWorkspace(
+            settings.sandbox_call_root, allow_nested=settings.sandbox_commit_allow_nested
+        )
         self._cleanup_deadline_seconds = cleanup_deadline_seconds
 
     @property
@@ -159,6 +162,20 @@ class ContainerSupervisor:
         except OSError:
             pass
         return text, truncated
+
+    @staticmethod
+    def _seed_call_out(artifact_dir: Path, call_out: Path) -> None:
+        """Copy committed artifacts into this call's private out/ directory."""
+        if not artifact_dir.is_dir():
+            return
+        for entry in sorted(artifact_dir.iterdir()):
+            target = call_out / entry.name
+            if entry.is_symlink():
+                continue
+            if entry.is_dir():
+                shutil.copytree(entry, target, dirs_exist_ok=True, symlinks=False)
+            elif entry.is_file():
+                shutil.copyfile(entry, target)
 
     def _cleanup(self, container_id: str, layout: Optional[CallLayout], *, keep_files: bool) -> bool:
         gone = self._destroy(container_id) if container_id else True
@@ -273,7 +290,13 @@ class ContainerSupervisor:
             # nested `out` mountpoint itself (`--read-only` makes that mkdir fail).
             # Pre-creating an empty placeholder on the host is what makes the
             # read-only-parent + writable-child layout work.
-            Path(task_dir, "out").mkdir(parents=True, exist_ok=True)
+            artifact_dir = Path(task_dir) / "out"
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            # `out/` is the task's persistent artifact directory: seed the call's
+            # private copy so paths stay stable across calls (a file written as
+            # out/x.csv is still readable as out/x.csv in the next call), while a
+            # failed call still cannot leak half-products into it.
+            self._seed_call_out(artifact_dir, layout.out)
             created = self._runner.run(
                 [
                     "run", "-d",
@@ -358,20 +381,23 @@ class ContainerSupervisor:
             try:
                 report = self._workspace.commit(
                     layout,
-                    task_dir,
+                    artifact_dir,
                     max_files=self._settings.sandbox_commit_max_files,
                     max_total_bytes=self._settings.sandbox_commit_max_total_bytes,
+                    allow_overwrite=True,
                 )
             except CommitError as exc:
+                # Pre-commit validation rejected the whole batch before writing
+                # anything, so the code may simply try a different target: report
+                # a normal tool error instead of a terminal uncertain state.
                 return ExecutionOutcome(
-                    status="uncertain",
+                    status="error",
                     stdout=stdout,
                     stderr=stderr,
                     exit_code=executed.returncode,
                     output_truncated=truncated,
-                    error="artifact commit rejected: %s" % exc,
-                    execution_uncertain=True,
-                    terminal=True,
+                    error="artifact commit rejected: %s. Write artifacts under out/ "
+                    "(sub-directories are allowed)." % exc,
                 )
             if not report.ok:
                 return ExecutionOutcome(

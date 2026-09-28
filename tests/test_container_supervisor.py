@@ -106,7 +106,7 @@ def test_run_commits_artifacts_and_removes_the_container(tmp_path):
 
     assert outcome.status == "ok"
     assert outcome.committed == ["result.txt"]
-    assert (task_dir / "result.txt").read_text(encoding="utf-8") == "artifact"
+    assert (task_dir / "out" / "result.txt").read_text(encoding="utf-8") == "artifact"
     assert outcome.execution_uncertain is False and outcome.terminal is False
     assert _live_containers(runner) == []
 
@@ -215,7 +215,7 @@ def test_unconfirmed_removal_is_terminal(tmp_path):
     assert "removal not confirmed" in outcome.error
 
 
-def test_commit_rejection_is_terminal(tmp_path):
+def test_commit_rejection_is_a_retryable_error(tmp_path):
     runner = FakeDockerRunner()
     supervisor = _supervisor(tmp_path, runner)
     layout = supervisor.workspace.prepare("call-1")
@@ -230,8 +230,9 @@ def test_commit_rejection_is_terminal(tmp_path):
         code="1", task_dir=_task_dir(tmp_path), task_id="task-1", call_id="call-1", timeout=5
     )
 
-    assert outcome.status == "uncertain"
-    assert outcome.execution_uncertain and outcome.terminal
+    # Nothing was written, so this is a normal tool error the model can fix.
+    assert outcome.status == "error"
+    assert outcome.terminal is False and outcome.execution_uncertain is False
     assert "artifact commit rejected" in outcome.error
 
 

@@ -157,3 +157,19 @@ def test_partial_commit_is_reported_not_hidden(monkeypatch, tmp_path):
     assert report.ok is False
     assert report.committed == ["a.txt"]
     assert "disk full" in report.reason
+
+
+def test_overwrite_is_allowed_inside_the_artifact_directory(tmp_path):
+    workspace = _workspace(tmp_path)
+    layout = workspace.prepare("call-1")
+    (layout.out / "report.txt").write_text("v2", encoding="utf-8")
+    artifact_dir = _task_dir(tmp_path) / "out"
+    artifact_dir.mkdir()
+    (artifact_dir / "report.txt").write_text("v1", encoding="utf-8")
+
+    report = workspace.commit(
+        layout, artifact_dir, max_files=10, max_total_bytes=1000, allow_overwrite=True
+    )
+
+    assert report.ok and report.committed == ["report.txt"]
+    assert (artifact_dir / "report.txt").read_text(encoding="utf-8") == "v2"

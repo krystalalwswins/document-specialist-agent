@@ -48,8 +48,8 @@ def test_parses_a_document_and_returns_the_preview():
     assert result.metadata == {
         "source": task_file,
         # Deterministic contract: the script writes into the call's out/ and the
-        # metadata points at the committed path next to the input.
-        "markdown_path": "/home/gem/workspace/tasks/task-1/report.md",
+        # metadata points at the persistent out/ path the model can read back.
+        "markdown_path": "/home/gem/workspace/tasks/task-1/out/report.md",
         "chars": 14,
         "truncated": False,
     }
@@ -66,7 +66,7 @@ def test_long_documents_are_truncated_and_point_at_the_full_file():
     assert result.success
     assert result.output.startswith("x" * 1000)
     assert "truncated: 5000 chars total" in result.output
-    assert "/home/gem/workspace/tasks/task-1/big.md" in result.output
+    assert "/home/gem/workspace/tasks/task-1/out/big.md" in result.output
     assert result.metadata["truncated"] is True
 
 

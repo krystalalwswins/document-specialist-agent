@@ -60,6 +60,7 @@ def split_last_expression(source: str) -> tuple[str, Optional[str]]:
 
 # Plain string (no formatting is applied) so braces stay literal.
 _RUNNER_BODY = '''\
+import errno
 import sys
 import traceback
 
@@ -89,6 +90,17 @@ def main():
         sys.stderr.flush()
         code = exc.code if isinstance(exc.code, int) else 1
         raise SystemExit(code)
+    except OSError as exc:
+        traceback.print_exc()
+        if getattr(exc, "errno", None) == errno.EROFS:
+            print(
+                "HINT: the task directory is read-only. Write every new file under out/ "
+                "(for example out/report.csv); out/ keeps the same path for the whole task.",
+                file=sys.stderr,
+            )
+        sys.stdout.flush()
+        sys.stderr.flush()
+        raise SystemExit(1)
     except BaseException:
         traceback.print_exc()
         sys.stdout.flush()

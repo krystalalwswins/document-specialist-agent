@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     sandbox_output_spool_max_bytes: int = Field(default=32 * 1024 * 1024, ge=1024)
     sandbox_commit_max_files: int = Field(default=64, ge=1)
     sandbox_commit_max_total_bytes: int = Field(default=256 * 1024 * 1024, ge=1024)
+    # Artifacts may live in sub-directories (e.g. out/reports/summary.csv);
+    # depth is still bounded inside CallWorkspace.
+    sandbox_commit_allow_nested: bool = True
     sandbox_orphan_ttl_seconds: int = Field(default=300, ge=1)
     # Startup lifecycle must call ContainerSupervisor.preflight() explicitly; the
     # constructors themselves stay Docker-free so offline tests are unaffected.
@@ -200,6 +203,11 @@ class Settings(BaseSettings):
 
     # Document parsing budget (characters returned to the model per call).
     document_max_chars: int = Field(default=20000, ge=100)
+
+    # Tool-calling rounds allowed per execution attempt. The one-shot sandbox
+    # needs a little headroom: the model may spend a round discovering that the
+    # task directory is read-only and that artifacts belong under out/.
+    executor_max_iterations: int = Field(default=12, ge=1)
 
 
 @lru_cache(maxsize=1)

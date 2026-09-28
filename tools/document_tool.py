@@ -172,7 +172,9 @@ class ParseDocumentTool(BaseTool):
             # Relative filename (registry normally binds an absolute virtual path).
             task_dir = cwd or getattr(self._client, "workspace", "") or ""
         markdown_out = posixpath.join(task_dir, "out", markdown_name) if task_dir else posixpath.join("out", markdown_name)
-        markdown_final = posixpath.join(task_dir, markdown_name) if task_dir else markdown_name
+        # out/ is persistent for the whole task, so the committed path keeps the
+        # same shape the model wrote.
+        markdown_final = markdown_out
         script = (
             DOCUMENT_SCRIPT.replace("__SOURCE__", json.dumps(filename))
             .replace("__MARKDOWN__", json.dumps(markdown_out))

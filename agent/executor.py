@@ -325,9 +325,9 @@ class Executor:
             "calls, so pass results through files.",
             "- Only what you print() is returned. A trailing expression is echoed as well, "
             "but print explicitly whenever a value matters.",
-            "- The task directory already holds your inputs and is read-only. Write every "
-            "new file under its out/ directory (for example out/report.csv); committed "
-            "files then appear next to the inputs.",
+            "- The task directory holds your inputs (read-only). Write every new file under "
+            "out/ (for example out/report.csv); out/ persists for the whole task, so a file "
+            "you write there is still readable at the same path in later calls.",
             "",
             f"Plan v{state.version} progress:",
             f"- completed: {', '.join(state.completed_ids()) or '(none)'}",

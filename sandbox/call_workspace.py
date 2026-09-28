@@ -107,6 +107,7 @@ class CallWorkspace:
         *,
         max_files: int,
         max_total_bytes: int,
+        allow_overwrite: bool = False,
     ) -> CommitReport:
         out_dir = layout.out
         task_root = Path(task_dir)
@@ -123,6 +124,11 @@ class CallWorkspace:
                 if self._same_bytes(source, target):
                     report.skipped_identical.append(relative)
                     report.register_final_path(relative, str(target))
+                    continue
+                if allow_overwrite:
+                    # Inside the task's own artifact directory the model may
+                    # revise a file it produced earlier in the same task.
+                    to_write.append((source, target))
                     continue
                 raise CommitError(
                     "refusing to overwrite existing artifact: %s" % relative
