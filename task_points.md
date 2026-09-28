@@ -467,7 +467,7 @@ P0-3。
 
 ### P0-5：补齐 Harness V1 回归测试和真实验证记录
 
-**状态：离线八条场景通过；真实沙箱烟测未通过（测量脚本已校准；`hard_timeout` 探针 8/8 泄漏、`cleanup_session` 探针在脱离进程组场景泄漏，一次性容器探针通过全部安全门槛——强杀 0.50s、零延迟副作用、并发隔离、无 Docker Socket 暴露，证据见 `docs/verification/10`、`11`、`12`；下一步为 Jupyter 富输出依赖审计与迁移成本评估，尚未开始）（2026-09-28，`main`）**
+**状态：离线八条场景通过；真实沙箱烟测未通过（测量脚本已校准；`hard_timeout` 探针 8/8 泄漏、`cleanup_session` 探针在脱离进程组场景泄漏，一次性容器探针通过全部安全门槛——强杀 0.50s、零延迟副作用、并发隔离、无 Docker Socket 暴露；Jupyter 依赖审计已完成，依赖只收敛在 `SandboxClient.execute_python` 一处、富输出无生产消费者，迁移风险集中在末行表达式显示与容器生命周期/错误映射。证据见 `docs/verification/10`、`11`、`12`、`13`；下一步为迁移成本核算与生产执行链路设计，尚未开始）（2026-09-28，`main`）**
 
 本轮新增 `tests/test_harness_v1_scenarios.py`，通过统一的
 `AgentOrchestrator.run` 入口覆盖静态计划、失败换路、局部重规划、大结果卸载与

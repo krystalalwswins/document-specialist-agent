@@ -169,5 +169,8 @@ timeout + 监督组件发现超时 + docker rm -f
 ```
 
 一次性容器在本次实测中通过了全部安全门槛，因此继续保留该路线；但**迁移审计与生产设计
-尚未开始**，本轮不修改任何生产代码，`SandboxClient.execute_python` 保持原样，
+随后已完成（见 [`13_jupyter_dependency_audit.md`](13_jupyter_dependency_audit.md)）：
+Jupyter 依赖只收敛在 `SandboxClient.execute_python` 一处，富输出没有生产消费者，
+迁移风险集中在"末行表达式自动显示"与"容器生命周期/错误映射"。
+上述探针轮次均未修改生产代码，`SandboxClient.execute_python` 保持原样，
 P0-5 继续保持未完成。
