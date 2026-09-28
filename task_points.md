@@ -467,7 +467,7 @@ P0-3。
 
 ### P0-5：补齐 Harness V1 回归测试和真实验证记录
 
-**状态：离线八条场景通过；真实沙箱烟测未通过（测量脚本已校准；`hard_timeout` 探针 8/8 泄漏、`cleanup_session` 探针在脱离进程组场景泄漏，一次性容器探针通过全部安全门槛——强杀 0.50s、零延迟副作用、并发隔离、无 Docker Socket 暴露；Jupyter 依赖审计已完成，依赖只收敛在 `SandboxClient.execute_python` 一处、富输出无生产消费者。迁移成本核算与生产执行链路设计已完成，见 `docs/design/14_one_shot_execution_migration.md`（每次代码调用一个一次性容器 + `--network none` + 宿主侧 `docker exec`，估算 6.5–9 工程师日）；待设计评审通过后建立独立实现分支。证据见 `docs/verification/10`、`11`、`12`、`13`）（2026-09-28，`main`）**
+**状态：离线八条场景通过；真实沙箱烟测未通过（测量脚本已校准；`hard_timeout` 探针 8/8 泄漏、`cleanup_session` 探针在脱离进程组场景泄漏，一次性容器探针通过全部安全门槛——强杀 0.50s、零延迟副作用、并发隔离、无 Docker Socket 暴露；Jupyter 依赖审计已完成。迁移设计经第一次评审为有条件通过，已完成 7 项修订并冻结 5 项决策（不保留自动降级、固定镜像摘要、固定非 root UID/GID、启用只读根文件系统、性能重新实测），见 `docs/design/14_one_shot_execution_migration.md`：保留 `/home/gem/workspace/tasks/<task_id>` 规范路径、控制文件与产物分离、补全产物提交协议、修正输出 spool 与 P0-3 的衔接、按精确 Container ID 验证消失、固定额外延迟修正为 ≥1.33s/次，工期 9–11.5 工程师日。评审通过后建立 `feat/one-shot-execution` 分支。证据见 `docs/verification/10`、`11`、`12`、`13`）（2026-09-28，`main`）**
 
 本轮新增 `tests/test_harness_v1_scenarios.py`，通过统一的
 `AgentOrchestrator.run` 入口覆盖静态计划、失败换路、局部重规划、大结果卸载与
