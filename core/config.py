@@ -51,11 +51,16 @@ class Settings(BaseSettings):
     sandbox_memory: str = Field(default="4g", min_length=1)
     sandbox_memory_swap: str = Field(default="4g", min_length=1)
     sandbox_pids_limit: int = Field(default=512, ge=1)
-    sandbox_container_workspace: str = Field(default="/home/gem/workspace", min_length=1)
+    # Host directory that backs <sandbox_workspace>. Tools keep speaking the
+    # POSIX virtual paths; TaskWorkspace maps them onto this host root.
+    sandbox_host_workspace: str = Field(default=".data/sandbox_workspace", min_length=1)
     sandbox_output_spool_max_bytes: int = Field(default=32 * 1024 * 1024, ge=1024)
     sandbox_commit_max_files: int = Field(default=64, ge=1)
     sandbox_commit_max_total_bytes: int = Field(default=256 * 1024 * 1024, ge=1024)
     sandbox_orphan_ttl_seconds: int = Field(default=300, ge=1)
+    # Startup lifecycle must call ContainerSupervisor.preflight() explicitly; the
+    # constructors themselves stay Docker-free so offline tests are unaffected.
+    sandbox_preflight_on_startup: bool = True
     allowed_tools: list[str] = Field(
         default_factory=lambda: [
             "run_python",

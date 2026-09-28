@@ -12,6 +12,7 @@ when the preview returned to the model is truncated.
 from __future__ import annotations
 
 import json
+import posixpath
 from typing import Any, Optional
 
 from sandbox.client import SandboxClient
@@ -163,9 +164,18 @@ class ParseDocumentTool(BaseTool):
     ) -> ToolResult:
         budget = self._max_chars if max_chars is None else max_chars
         markdown_name = _markdown_name(filename)
+        # The task directory is mounted read-only for one-shot calls, so the
+        # markdown goes to the call's writable out/ and is committed afterwards.
+        # This is deterministic behaviour, not something the prompt has to ask for.
+        task_dir = posixpath.dirname(filename)
+        if not task_dir:
+            # Relative filename (registry normally binds an absolute virtual path).
+            task_dir = cwd or getattr(self._client, "workspace", "") or ""
+        markdown_out = posixpath.join(task_dir, "out", markdown_name) if task_dir else posixpath.join("out", markdown_name)
+        markdown_final = posixpath.join(task_dir, markdown_name) if task_dir else markdown_name
         script = (
             DOCUMENT_SCRIPT.replace("__SOURCE__", json.dumps(filename))
-            .replace("__MARKDOWN__", json.dumps(markdown_name))
+            .replace("__MARKDOWN__", json.dumps(markdown_out))
         )
         result = self._client.execute_python(script, cwd=cwd)
         if result.status != "ok":
@@ -192,13 +202,13 @@ class ParseDocumentTool(BaseTool):
         markdown = payload.get("markdown", "")
         preview = markdown[:budget]
         if len(markdown) > budget:
-            preview += f"\n\n_(truncated: {len(markdown)} chars total, full markdown at {payload['markdown_path']})_"
+            preview += f"\n\n_(truncated: {len(markdown)} chars total, full markdown at {markdown_final})_"
         return ToolResult(
             success=True,
             output=preview,
             metadata={
                 "source": filename,
-                "markdown_path": payload.get("markdown_path"),
+                "markdown_path": markdown_final,
                 "chars": payload.get("chars", len(markdown)),
                 "truncated": len(markdown) > budget,
             },

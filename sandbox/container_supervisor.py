@@ -9,6 +9,7 @@ offline tests and `build_orchestrator()` stay Docker-free.
 
 from __future__ import annotations
 
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,10 +23,15 @@ from sandbox.exec_wrapper import RUNNER_PATH_IN_CONTAINER, build_runner_source
 MANAGED_LABEL = "doc-agent.managed"
 TASK_LABEL = "doc-agent.task_id"
 CALL_LABEL = "doc-agent.tool_call_id"
+CREATED_AT_LABEL = "doc-agent.created_at"
 
 DEFAULT_EXEC_TIMEOUT = 30.0
 CLEANUP_DEADLINE_SECONDS = 20.0
 VERIFY_POLL_SECONDS = 0.2
+
+
+class SandboxUnavailable(RuntimeError):
+    """Startup preflight failed; the sandbox capability must not be used."""
 
 
 @dataclass(frozen=True)
@@ -83,7 +89,7 @@ class ContainerSupervisor:
 
     # -- shared helpers -----------------------------------------------------
     def _container_task_path(self, task_id: str) -> str:
-        return "%s/tasks/%s" % (self._settings.sandbox_container_workspace, task_id)
+        return "%s/tasks/%s" % (self._settings.sandbox_workspace, task_id)
 
     def _security_args(self) -> list[str]:
         return [
@@ -101,6 +107,14 @@ class ContainerSupervisor:
             "-e", "HOME=/tmp",
             "-e", "XDG_CACHE_HOME=/tmp",
             "-e", "MPLCONFIGDIR=/tmp",
+        ]
+
+    def _label_args(self, *, task_id: str, call_id: str) -> list[str]:
+        return [
+            "--label", "%s=1" % MANAGED_LABEL,
+            "--label", "%s=%s" % (TASK_LABEL, task_id),
+            "--label", "%s=%s" % (CALL_LABEL, call_id),
+            "--label", "%s=%d" % (CREATED_AT_LABEL, int(time.time())),
         ]
 
     def _image_exists(self) -> bool:
@@ -183,9 +197,7 @@ class ContainerSupervisor:
                 [
                     "run", "-d",
                     "--name", "doc-agent-preflight-%s" % layout.call_id,
-                    "--label", "%s=1" % MANAGED_LABEL,
-                    "--label", "%s=preflight" % TASK_LABEL,
-                    "--label", "%s=%s" % (CALL_LABEL, layout.call_id),
+                    *self._label_args(task_id="preflight", call_id=layout.call_id),
                     *self._security_args(),
                     "-v", "%s:%s:ro" % ((task_dir / "out").parent.resolve(), self._container_task_path("preflight")),
                     "-v", "%s:%s/out:rw" % ((task_dir / "out").resolve(), self._container_task_path("preflight")),
@@ -222,7 +234,7 @@ class ContainerSupervisor:
 
     def _preflight_script(self, task_id: str) -> str:
         task_path = self._container_task_path(task_id)
-        sibling = "%s/tasks/not-this-task" % self._settings.sandbox_container_workspace
+        sibling = "%s/tasks/not-this-task" % self._settings.sandbox_workspace
         return "; ".join(
             [
                 "printf 'read_input='; cat %s/input.txt 2>&1 || true" % task_path,
@@ -257,9 +269,7 @@ class ContainerSupervisor:
                 [
                     "run", "-d",
                     "--name", "doc-agent-call-%s" % call_id,
-                    "--label", "%s=1" % MANAGED_LABEL,
-                    "--label", "%s=%s" % (TASK_LABEL, task_id),
-                    "--label", "%s=%s" % (CALL_LABEL, call_id),
+                    *self._label_args(task_id=task_id, call_id=call_id),
                     *self._security_args(),
                     "-v", "%s:%s:ro" % (Path(task_dir).resolve(), self._container_task_path(task_id)),
                     "-v", "%s:%s/out:rw" % (layout.out.resolve(), self._container_task_path(task_id)),
@@ -413,7 +423,7 @@ class ContainerSupervisor:
 
     def _per_call_script(self, task_id: str) -> str:
         task_path = self._container_task_path(task_id)
-        sibling = "%s/tasks/not-this-task" % self._settings.sandbox_container_workspace
+        sibling = "%s/tasks/not-this-task" % self._settings.sandbox_workspace
         return "; ".join(
             [
                 "printf 'write_out='; if printf x > %s/out/.probe 2>/dev/null && rm -f %s/out/.probe; then echo ok; else echo denied; fi" % (task_path, task_path),

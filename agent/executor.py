@@ -320,6 +320,15 @@ class Executor:
             "is missing, completion criteria cannot be met, or the plan's dependencies no "
             "longer hold. Completed steps are kept unchanged.",
             "",
+            "Execution rules:",
+            "- Code runs in a fresh one-shot sandbox: variables do not persist between "
+            "calls, so pass results through files.",
+            "- Only what you print() is returned. A trailing expression is echoed as well, "
+            "but print explicitly whenever a value matters.",
+            "- The task directory already holds your inputs and is read-only. Write every "
+            "new file under its out/ directory (for example out/report.csv); committed "
+            "files then appear next to the inputs.",
+            "",
             f"Plan v{state.version} progress:",
             f"- completed: {', '.join(state.completed_ids()) or '(none)'}",
             f"- running: {', '.join(state.running_ids()) or '(none)'}",

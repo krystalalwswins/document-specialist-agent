@@ -30,6 +30,23 @@ from memory.store import MemoryNotFoundError
 logger = logging.getLogger(__name__)
 
 
+def _preflight_sandbox(orchestrator: AgentOrchestrator, settings: Settings) -> None:
+    """Run the sandbox environment preflight as part of application startup.
+
+    Kept out of the constructors on purpose: offline tests and
+    ``build_orchestrator()`` must stay Docker-free, and an injected fake
+    orchestrator has no supervisor at all.
+    """
+    if not settings.sandbox_preflight_on_startup:
+        return
+    supervisor = getattr(orchestrator, "sandbox_supervisor", None)
+    if supervisor is None:
+        return
+    result = supervisor.preflight()
+    if not result.ok:
+        raise RuntimeError(result.summary())
+
+
 class TaskInputFile(BaseModel):
     oss_key: str = Field(min_length=1)
     filename: str | None = Field(default=None, min_length=1)
@@ -121,6 +138,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        _preflight_sandbox(orchestrator, settings)
         _recover_stale(orchestrator.task_manager, settings, "on startup")
         stop = _start_reaper(orchestrator.task_manager, settings)
         pool.start()

@@ -20,8 +20,11 @@ from memory.store import SQLiteMemoryStore
 from metering.budget import BudgetController, TokenBudgetPolicy
 from metering.meter import UsageMeter
 from metering.pricing import PricingCatalog
-from sandbox.client import SandboxClient
+from sandbox.container_supervisor import ContainerSupervisor
+from sandbox.docker_runner import SubprocessDockerRunner
 from sandbox.inputs import InputStager
+from sandbox.one_shot_client import OneShotSandboxClient
+from sandbox.task_workspace import TaskWorkspace
 from storage.storage_manager import StorageManager
 from task.file_task_store import FileTaskStore
 from task.task_manager import TaskManager
@@ -38,7 +41,15 @@ from security.permission_manager import PermissionManager
 def build_orchestrator(settings: Settings | None = None) -> AgentOrchestrator:
     settings = settings or get_settings()
 
-    sandbox = SandboxClient(settings)
+    # One-shot execution backend only: code runs in a throwaway container that
+    # the trusted host process creates and destroys itself. There is deliberately
+    # no fallback to the legacy HTTP sandbox (design note 14 §3.11).
+    task_workspace = TaskWorkspace(
+        virtual_root=settings.sandbox_workspace,
+        host_root=settings.sandbox_host_workspace,
+    )
+    supervisor = ContainerSupervisor(SubprocessDockerRunner(), settings, workspace=None)
+    sandbox = OneShotSandboxClient(settings, supervisor, task_workspace)
     storage = StorageManager(settings)
     task_manager = TaskManager(FileTaskStore(settings.task_store_dir))
     llm = LLMClient(settings)
@@ -121,4 +132,5 @@ def build_orchestrator(settings: Settings | None = None) -> AgentOrchestrator:
         memory_service=memory_service,
         usage_meter=usage_meter,
         budget_controller=budget_controller,
+        sandbox_supervisor=supervisor,
     )

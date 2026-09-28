@@ -10,6 +10,7 @@ production uses `SubprocessDockerRunner`, tests inject `FakeDockerRunner`.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -59,16 +60,17 @@ class SubprocessDockerRunner:
     """Real Docker CLI. `timeout` is the host-side timer, not docker's own."""
 
     def __init__(self, docker_path: Optional[str] = None) -> None:
-        resolved = docker_path or find_docker_cli()
-        if not resolved:
-            raise DockerTimeout("docker command is unavailable on this host")
-        self._docker_path = resolved
+        # Resolution is lazy so that composing the stack stays Docker-free: the
+        # error only surfaces when something actually tries to run a container.
+        self._docker_path = docker_path or find_docker_cli()
 
     @property
     def docker_path(self) -> str:
-        return self._docker_path
+        return self._docker_path or ""
 
     def run(self, args: Sequence[str], *, timeout: float) -> CommandResult:
+        if not self._docker_path:
+            raise DockerTimeout("docker command is unavailable on this host")
         argv = [self._docker_path, *args]
         try:
             completed = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
@@ -82,6 +84,7 @@ class SubprocessDockerRunner:
 @dataclass
 class FakeContainer:
     container_id: str
+    name: str = ""
     argv: list[str] = field(default_factory=list)
     labels: dict[str, str] = field(default_factory=dict)
     removed: bool = False
@@ -179,9 +182,8 @@ class FakeDockerRunner:
             index += 1
         container_id = self.next_container_id()
         self.containers[container_id] = FakeContainer(
-            container_id=container_id, argv=list(argv), labels=labels
+            container_id=container_id, name=name, argv=list(argv), labels=labels
         )
-        self.containers[container_id].labels.setdefault("__name__", name)
         return CommandResult(argv, 0, container_id + "\n", "")
 
     def _exec(self, argv: tuple[str, ...]) -> CommandResult:
@@ -209,6 +211,8 @@ class FakeDockerRunner:
         container = self.containers.get(container_id)
         if container is None or container.removed:
             return CommandResult(argv, 1, "", "error: no such object: %s" % container_id)
+        if "--format" in argv and any("Config.Labels" in token for token in argv):
+            return CommandResult(argv, 0, json.dumps(container.labels) + "\n", "")
         return CommandResult(argv, 0, "[{}]\n", "")
 
     def _ps(self, argv: tuple[str, ...]) -> CommandResult:
