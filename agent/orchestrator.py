@@ -6,6 +6,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
+from observability.generation import bind_trace, reset_trace
+from observability.operations import traced, snapshot
 from agent.executor import Executor
 from agent.planner import Planner
 from agent.validator import ArtifactCheck, ArtifactValidator, ValidationResult
@@ -36,6 +38,8 @@ class AgentOrchestrator:
         memory_service: "MemoryService | None" = None,
         usage_meter: UsageMeter | None = None,
         budget_controller: BudgetController | None = None,
+        trace_recorder=None,
+        trace_code_version: str | None = None,
     ) -> None:
         self._task_manager = task_manager
         self._planner = planner
@@ -46,6 +50,8 @@ class AgentOrchestrator:
         self._memory_service = memory_service
         self._usage_meter = usage_meter
         self._budget_controller = budget_controller
+        self._trace_recorder = trace_recorder
+        self._trace_code_version = trace_code_version
 
     @property
     def task_manager(self) -> TaskManager:
@@ -68,6 +74,32 @@ class AgentOrchestrator:
         return self.run_task(task.id)
 
     def run_task(self, task_id: str) -> Task:
+        recorder = self._trace_recorder
+        if recorder is None:
+            return self._run_task(task_id)
+        task = self._task_manager.get_task(task_id)
+        trace_id = recorder.create(task_id, {"user_input": task.user_input,
+            "input_files": task.input_files, "code_version": self._trace_code_version,
+            "capture_scope": "T3: server-side model, tool, context, plan and delivery operations"})
+        root_id = None
+        if trace_id:
+            data = recorder._safe(trace_id, lambda: recorder.store.get(trace_id))
+            if data:
+                root_id = data["manifest"]["root_id"]
+        token = bind_trace(recorder, trace_id, root_id)
+        try:
+            result = self._run_task(task_id)
+            recorder.end(trace_id, root_id, output=result.result,
+                         status="SUCCESS" if result.status is TaskStatus.SUCCESS else "ERROR")
+            return result
+        except Exception as exc:
+            recorder.end(trace_id, root_id, status="ERROR",
+                         error={"type": type(exc).__name__, "message": str(exc)})
+            raise
+        finally:
+            reset_trace(token)
+
+    def _run_task(self, task_id: str) -> Task:
         task = self._task_manager.get_task(task_id)
         try:
             self._task_manager.start_task(task_id)
@@ -101,6 +133,7 @@ class AgentOrchestrator:
         # the run would still show CREATED.
         return self._task_manager.get_task(task_id)
 
+    @traced("input.stage", inputs=lambda a,k: a[0].task_manager.get_task(a[1]).input_files, outputs=lambda r,a,k: {"files": a[0].task_manager.get_task(a[1]).input_files, "workspace_dir": a[0].task_manager.get_task(a[1]).workspace_dir})
     def _stage_inputs(self, task_id: str) -> None:
         """Create the task's own sandbox directory, then load its declared inputs."""
         task = self._task_manager.get_task(task_id)
@@ -154,6 +187,7 @@ class AgentOrchestrator:
             )
             self._record_recovery(task_id, repairs, repair_hint)
 
+    @traced("memory.recall", inputs=lambda a,k: {"task_id": a[1]})
     def _recall_memories(self, task_id: str) -> str | None:
         if self._memory_service is None:
             return None
@@ -172,6 +206,7 @@ class AgentOrchestrator:
                 "memory_ids": [item.id for item in records],
                 "count": len(records),
             }])
+            snapshot("memory.records", lambda: [record.to_dict() for record in records])
             return self._memory_service.context(records)
         except Exception as exc:
             # Memory is an enhancement: a local DB problem must not block the task.
@@ -183,6 +218,7 @@ class AgentOrchestrator:
             }])
             return None
 
+    @traced("memory.capture", inputs=lambda a,k: {"task_id": a[1], "answer": a[2]}, outputs=lambda r,a,k: a[0].task_manager.get_task(a[1]).metrics.get("memory_events", []))
     def _capture_memories(self, task_id: str, answer: str) -> None:
         if self._memory_service is None:
             return
@@ -210,6 +246,7 @@ class AgentOrchestrator:
             return self._usage_meter.event_sink(task_id, phase=phase)
         return self._task_manager.metric_sink(task_id, "llm_events", phase=phase)
 
+    @traced("artifact.validate", inputs=lambda a,k: {"task_id": a[1], "artifacts": a[2], "require_artifact": a[3] if len(a)>3 else k.get("require_artifact", False)})
     def _check_artifacts(
         self, task_id: str, artifacts: list[dict], require_artifact: bool = False
     ) -> Any:

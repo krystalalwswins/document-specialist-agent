@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from observability import TraceStore, TraceRecorder
 from agent.executor import Executor
 from agent.llm_client import LLMClient
 from agent.orchestrator import AgentOrchestrator
@@ -118,6 +119,10 @@ def build_orchestrator(settings: Settings | None = None) -> AgentOrchestrator:
         input_stager=InputStager(storage, sandbox, settings),
         validator=ArtifactValidator(storage),
         max_recovery_attempts=settings.task_max_recovery_attempts,
+        trace_recorder=(TraceRecorder(TraceStore(settings.trace_store_dir, inline_bytes=settings.trace_inline_bytes),
+                                     export_enabled=settings.langfuse_enabled)
+                        if settings.trace_enabled else None),
+        trace_code_version=settings.trace_code_version,
         memory_service=memory_service,
         usage_meter=usage_meter,
         budget_controller=budget_controller,

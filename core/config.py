@@ -11,7 +11,7 @@ from decimal import Decimal
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 
 
 class Settings(BaseSettings):
@@ -120,6 +120,22 @@ class Settings(BaseSettings):
     llm_output_price_usd_per_million: Decimal | None = Field(default=None, ge=0)
 
     # Task persistence + stale-run recovery (a process restart must not lose history).
+    trace_enabled: bool = True
+    trace_prompt_version: str = "harness-prompts-v1"
+    trace_code_version: str | None = None
+    trace_store_dir: str = Field(default=".data/traces", min_length=1)
+    trace_inline_bytes: int = Field(default=16000, ge=1)
+    # Export is opt-in; keys stay server-side and never enter trace metadata.
+    langfuse_enabled: bool = False
+    langfuse_base_url: str = "https://cloud.langfuse.com"
+    langfuse_public_key: SecretStr = SecretStr("")
+    langfuse_secret_key: SecretStr = SecretStr("")
+    langfuse_environment: str = "development"
+    langfuse_export_interval: float = Field(default=5, ge=0.1, le=60)
+    langfuse_export_timeout: float = Field(default=10, gt=0, le=30)
+    langfuse_export_max_attempts: int = Field(default=5, ge=1, le=20)
+    langfuse_payload_max_bytes: int = Field(default=128000, ge=256, le=500000)
+    langfuse_redact_keys: list[str] = Field(default_factory=lambda: ["email", "phone"])
     task_store_dir: str = Field(default=".data/tasks", min_length=1)
     # Only tasks with no progress for this long are marked FAILED after a restart.
     # Keep it well above the slowest single step (LLM attempts + tool timeouts).

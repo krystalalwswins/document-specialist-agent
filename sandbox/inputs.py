@@ -12,6 +12,7 @@ Two guards keep a submitted key from escaping its intended scope:
 from __future__ import annotations
 
 from pathlib import PurePosixPath
+import hashlib
 from typing import Any, Optional
 
 from security.permission_manager import object_key, task_workspace, workspace_path
@@ -60,6 +61,7 @@ class InputStager:
             "sandbox_path": path,
             "filename": PurePosixPath(path).name,
             "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
         }
 
     def stage_all(self, task_id: str, specs: list[dict[str, Any]]) -> list[dict[str, Any]]:

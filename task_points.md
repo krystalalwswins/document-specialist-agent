@@ -776,3 +776,45 @@ P0-1 结构化计划
 - 产物在任务成功前经过确定性校验；
 - 固定 Evaluation 案例能够重复运行并输出指标；
 - README、设计文档、测试结果和简历描述彼此一致。
+
+## Trace 专题（用户新增授权，2026-09-28）
+
+T0：数据模型与记录规范已实现，分支 `feat/trace-t0-model`，待独立验收。
+新增 `observability/model.py`、导出接口、`tests/test_trace_model.py`；
+设计/学习说明：`docs/design/14_trace_contract.md`；验收：`docs/verification/10_trace_contract.md`。
+只定义契约，不接主链；沿用此前约定，本轮不执行测试。
+T1 存储/查询、T2 模型埋点、T3 工具/交付、T4 Langfuse、T5 完整验收尚未实现。
+
+### T1：本地 Trace 存储与查询
+
+2026-09-28：分支 feat/trace-t1-store，基于 T0；实现完成，待独立验收。
+新增 TraceStore/TraceRecorder、基础脱敏、哈希回读、事件图校验、故障隔离、显式中断恢复；
+新增任务 Trace 和 payload 只读接口及配置。T2/T3 尚未接入，正常任务不自动产新 Trace。
+文档：docs/design/15_trace_storage.md；验收：docs/verification/11_trace_storage.md。
+沿用约定未运行测试，不推送远端（等待前次推送授权）。
+
+### T2：模型调用 Generation
+
+2026-09-28：feat/trace-t2-generation，基于 T1；实现完成，待独立验收。
+LLMClient 在实际请求前后采集消息、工具定义、可见响应、独立重试、用量与估算费用。
+Orchestrator 加根 Trace 和 worker 内 ContextVar 绑定/清理；正常 wiring 默认启用，可关闭。
+各阶段复用统一调用边界，工具实际执行埋点及完整计划快照留给 T3。
+学习说明 docs/design/16_trace_generations.md；验收 docs/verification/12_trace_generations.md。
+本轮未运行测试，无远端推送。
+
+### T3：工具、上下文、计划与交付
+
+2026-09-28：feat/trace-t3-tools，基于 T2；实现完成，待独立验收。
+新增故障隔离操作装饰器与快照；接入工具原始/实际参数、独立尝试、完整结果/模型预览、
+计划版本、上下文前后消息、记忆召回、输入哈希和产物校验。保留根最终服务端交付。
+学习：docs/design/17_trace_tools_delivery.md；验收：docs/verification/13_trace_tools_delivery.md。
+未运行测试、未推送远端；Langfuse 留给 T4。
+
+### T4：Langfuse 展示与检索接入
+
+2026-09-28：feat/trace-t4-langfuse，基于 T3；代码实现，待独立验收。
+采用官方 OTLP/HTTP JSON 接口，无新增 SDK；本地落盘事件异步转换，保持原始 ID/父子关系/时间。
+默认关闭，仅新任务登记；导出脱敏/大内容受控引用、持久化发送回执、429 退避、
+不确定结果人工处理、状态查询与 lifespan 启停。v4 不保证重复 ID 去重，不承诺 exactly-once。
+学习 docs/design/18_langfuse_export.md；验收 docs/verification/14_langfuse_export.md。
+用户需在本地配置实例地址和项目密钥。未运行测试、未推送远端、未发送实际 Trace；T5 未开始。

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from observability.operations import traced
 
 from jsonschema import Draft202012Validator
 
@@ -43,6 +44,7 @@ class ToolRegistry:
     def to_openai_tools(self) -> list[dict[str, Any]]:
         return [tool.to_openai_schema() for tool in self._tools.values() if self._permissions.allows_tool(tool)]
 
+    @traced("tool.dispatch", inputs=lambda a,k: {"name": a[1], "raw_arguments": a[2], "task_id": k.get("task_id", a[3] if len(a)>3 else None)})
     def execute(
         self,
         name: str,
@@ -79,9 +81,13 @@ class ToolRegistry:
                 runtime_arguments["task_id"] = task_id
             if task_id is not None and tool.task_scoped_cwd:
                 runtime_arguments["cwd"] = self.task_directory(task_id)
-            return tool.execute(**runtime_arguments)
+            return self._execute_bound(tool, runtime_arguments)
         except PermissionDenied as exc:
             return ToolResult(False, error=str(exc), error_type=ErrorType.PERMISSION_DENIED)
+
+    @traced("tool.execute", kind="tool", inputs=lambda a,k: {"tool_name": a[1].name, "effective_arguments": a[2], "execution_started": True})
+    def _execute_bound(self, tool, runtime_arguments):
+        return tool.execute(**runtime_arguments)
 
     def task_directory(self, task_id: str) -> str:
         """Return the sandbox directory that belongs to ``task_id``."""

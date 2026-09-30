@@ -113,6 +113,7 @@ class UsageMeter:
             )
             self.refresh(task_id)
 
+        sink.trace_metadata = {"task_id": task_id, **context}
         return sink
 
     def refresh(self, task_id: str) -> dict[str, Any]:

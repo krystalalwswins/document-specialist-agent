@@ -407,3 +407,36 @@ README 不固化易过期的 passed 数量；当前版本的环境、commit、�
 - `docs/verification/08_evaluation.md`：P1-2 验收矩阵与待执行命令。
 - `docs/design/13_metering_and_budget.md`：P1-3 计量、估价与累计预算的设计和学习说明。
 - `docs/verification/09_metering_budget.md`：P1-3 验收矩阵与待执行命令。
+
+### 完整 Trace 专题进度
+
+T0 已定义独立 Trace/Observation 事件模型和输入输出快照契约，尚未接入运行时或 Langfuse。
+现有 Task JSON 不等于完整逐轮 Trace。设计与学习说明见
+[Trace 契约](docs/design/14_trace_contract.md)，待执行验收见
+[T0 验收](docs/verification/10_trace_contract.md)。
+
+T1 已补齐本地 TraceStore/TraceRecorder 和只读查询：
+`GET /tasks/{task_id}/trace`、`GET /tasks/{task_id}/trace/payloads/{ref}`。
+配置 `TRACE_STORE_DIR`（默认 `.data/traces`）、`TRACE_INLINE_BYTES`（默认 16000）。
+目前尚未自动采集 Agent 任务，未采集时接口返回 404；不等于完整 Trace 已接入。
+参见 [本地存储学习说明](docs/design/15_trace_storage.md) 和
+[待执行验收](docs/verification/11_trace_storage.md)。
+
+T2 已接入正常 wiring 的任务根 Trace 和 LLMClient 每次真实模型请求：
+保存实际消息/工具定义、可见响应、重试、Token 与估算费用。
+`TRACE_ENABLED=false` 可关闭；`TRACE_PROMPT_VERSION` 指定提示词标签，`TRACE_CODE_VERSION` 可选。
+当前仅根+模型调用，工具实际参数/结果细分追踪仍待 T3；未运行验收。
+见 [模型调用追踪](docs/design/16_trace_generations.md)、[T2 验收](docs/verification/12_trace_generations.md)。
+
+T3 已补齐工具派发/实际执行、重试关联、计划快照、上下文前后消息、记忆记录、
+输入文件哈希与产物校验埋点。模型请求参数、运行时实际参数与模型收到的预览可分别查看。
+当前实现待独立验收，仍未接 Langfuse；详见
+[T3 学习说明](docs/design/17_trace_tools_delivery.md) 和 [T3 验收](docs/verification/13_trace_tools_delivery.md)。
+
+T4 已新增可选 Langfuse OTLP 导出（实现待验收）：独立线程读取本地已结束操作，
+保持 Trace/父子 ID，发送模型、工具和交付数据；记录持久化回执，限流退避，
+不确定发送暂停并允许人工核对后处理。默认 `LANGFUSE_ENABLED=false`。
+配置地址与项目密钥后重启 API，新任务才登记导出，不自动上传历史任务。
+状态：`GET /tasks/{task_id}/trace/export`。
+详见 [T4 配置和学习说明](docs/design/18_langfuse_export.md)、[T4 待执行验收](docs/verification/14_langfuse_export.md)。
+此前各段描述的是各阶段交付时状态；当前累计实现 T0～T4，均待本轮专题独立验收，尚无真实 Langfuse 联调证据。

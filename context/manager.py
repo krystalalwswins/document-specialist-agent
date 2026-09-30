@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from observability.operations import traced
+
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -75,6 +77,7 @@ class ContextManager:
             raise ValueError("at least the system prompt must be pinned")
         return ContextSession(pinned_count=pinned_count)
 
+    @traced("context.prepare", inputs=lambda a,k: {"messages": a[1], "tools": a[2], "snapshot": a[4], "force_compaction": k.get("force_compaction", False)})
     def prepare(
         self,
         messages: list[dict[str, Any]],

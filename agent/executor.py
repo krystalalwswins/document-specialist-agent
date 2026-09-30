@@ -8,6 +8,8 @@ can ask for a budgeted, versioned local replan.
 
 from __future__ import annotations
 
+from observability.operations import traced, snapshot
+
 import copy
 import json
 import time
@@ -329,6 +331,7 @@ class Executor:
             ) or "(none)"),
         ])
 
+    @traced("agent.tool_call", inputs=lambda a,k: {"tool": a[3].function.name, "raw_arguments_json": a[3].function.arguments, "tool_call_id": a[3].id, "plan_version": a[2].version}, outputs=lambda r,a,k: {"plan_version": r.version, "last_message": a[4][-1]})
     def _run_tool_call(
         self, task_id: str, state: PlanRunState, call: Any, messages: list[dict[str, Any]]
     ) -> PlanRunState:
@@ -379,6 +382,7 @@ class Executor:
         result, _, attempts = self._invoke_tool(
             task_id, name, arguments, step_id=step.id, tool_call_id=call.id,
         )
+        snapshot("tool.attempts", {"tool_call_id": call.id, "task_step_id": step.id, "attempts": attempts})
         self._task_manager.set_step_attempts(task_id, step.id, attempts)
         try:
             prepared = self._prepare_tool_output(
@@ -395,6 +399,7 @@ class Executor:
             )
             raise ToolOutputProcessingError("tool_output_processing_failed") from exc
 
+        snapshot("tool.output_delivery", {"tool_call_id": call.id, "task_step_id": step.id, "model_visible_output": prepared.model_text, "task_preview": prepared.task_text, "result_ref": prepared.result_ref})
         if prepared.truncated:
             self._task_manager.add_metric_events(task_id, "context_events", [{
                 "occurred_at": datetime.now(timezone.utc).isoformat(),
@@ -506,6 +511,7 @@ class Executor:
             return candidates[0], None, True
         return None, None, False
 
+    @traced("plan.complete", inputs=lambda a,k: {"tool_call_id": a[3].id, "arguments": a[3].function.arguments}, outputs=lambda r,a,k: {"plan_version": r.version, "observation": a[4][-1]})
     def _complete_plan_step(
         self, task_id: str, state: PlanRunState, call: Any, messages: list[dict[str, Any]]
     ) -> PlanRunState:
@@ -559,6 +565,7 @@ class Executor:
             return f"plan step '{step_id}' is waiting for {', '.join(waiting)}"
         return None
 
+    @traced("plan.replan", inputs=lambda a,k: {"old_plan": a[3].plan.to_dict(), "arguments": a[4].function.arguments}, outputs=lambda r,a,k: {"new_plan": r[0].plan.to_dict(), "replans_used": r[1]})
     def _replan(
         self,
         task_id: str,
@@ -679,6 +686,7 @@ class Executor:
         return records
 
     def _record_plan_event(self, task_id: str, event: dict[str, Any]) -> None:
+        snapshot("plan.event", event)
         self._task_manager.add_plan_events(task_id, [{
             "occurred_at": datetime.now(timezone.utc).isoformat(),
             **event,
@@ -731,6 +739,7 @@ class Executor:
         def record(event: dict[str, Any]) -> None:
             event.update(step_id=step_id, tool_call_id=tool_call_id)
             events.append(event)
+            snapshot("tool.attempt", event)
             # Write after each attempt, before backoff; batch 2 replaces the in-memory store.
             self._record_retry_events(task_id, [event])
             if step_id is not None:
@@ -746,7 +755,7 @@ class Executor:
             attempt += 1
             started = time.monotonic()
             try:
-                result = self._registry.execute(name, arguments, task_id=task_id)
+                result = self._dispatch_attempt(task_id, name, arguments, attempt, step_id, tool_call_id)
                 error_type = None if result.success else result.error_type
                 error_message = result.error if not result.success else None
             except Exception as exc:
@@ -783,6 +792,10 @@ class Executor:
                 time.sleep(decision.delay_seconds)
                 continue
             return result, events, attempt
+
+    @traced("tool.attempt_dispatch", inputs=lambda a,k: {"task_id": a[1], "tool": a[2], "arguments": a[3], "attempt": a[4], "task_step_id": a[5], "tool_call_id": a[6]})
+    def _dispatch_attempt(self, task_id, name, arguments, attempt, step_id, tool_call_id):
+        return self._registry.execute(name, arguments, task_id=task_id)
 
     def _record_retry_events(self, task_id: str, events: list[dict[str, Any]]) -> None:
         if events:

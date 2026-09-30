@@ -23,6 +23,8 @@ from typing import Any, Callable, Optional
 from openai import OpenAI
 
 from core.config import Settings, get_settings
+from observability.generation import GenerationCapture
+from metering.pricing import PricingCatalog
 from retry.retry_policy import RetryPolicy, classify_exception
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,7 @@ class LLMClient:
             max_delay=self._settings.llm_retry_max_delay,
         )
         self._sleep = sleep
+        self._trace_pricing = PricingCatalog.from_settings(self._settings)
 
     @property
     def model(self) -> str:
@@ -80,13 +83,16 @@ class LLMClient:
         if tool_choice is not None:
             kwargs["tool_choice"] = tool_choice
 
+        capture = GenerationCapture(kwargs, on_event, self._settings.trace_prompt_version, self._trace_pricing)
         attempt = 0
         while True:
             attempt += 1
+            observation_id = capture.start(attempt)
             started = time.monotonic()
             try:
                 response = self._ensure_client().chat.completions.create(**kwargs)
             except Exception as exc:
+                capture.finish(observation_id, error=exc, duration_ms=int((time.monotonic() - started) * 1000))
                 error_type = classify_exception(exc)
                 decision = self._retry_policy.decide(attempt, error_type)
                 duration_ms = int((time.monotonic() - started) * 1000)
@@ -114,6 +120,8 @@ class LLMClient:
                 self._sleep(decision.delay_seconds)
                 continue
 
+            capture.finish(observation_id, response=response, usage=self._usage_fields(response),
+                           duration_ms=int((time.monotonic() - started) * 1000))
             self._emit(
                 on_event,
                 {

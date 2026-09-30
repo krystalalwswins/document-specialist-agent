@@ -6,6 +6,8 @@ implementation with Redis / a database without touching callers.
 
 from __future__ import annotations
 
+from observability.operations import snapshot
+
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from threading import RLock
@@ -131,6 +133,7 @@ class TaskManager:
             task = self._store.get(task_id)
             task.set_plan(plan)
             self._store.update(task)
+            snapshot("plan.created", plan)
 
     def succeed_task(self, task_id: str, result: Optional[dict[str, Any]] = None) -> Task:
         with self._lock:
@@ -250,8 +253,10 @@ class TaskManager:
         """Apply a locally replanned version; completed steps must survive verbatim."""
         with self._lock:
             task = self._store.get(task_id)
+            snapshot("plan.before_replan", task.plan)
             task.apply_replan(plan, reason_code=reason_code, reason=reason)
             self._store.update(task)
+            snapshot("plan.applied", {"plan": plan.to_dict(), "reason_code": reason_code, "reason": reason})
         return task
 
     def set_input_files(self, task_id: str, input_files: list[dict[str, Any]]) -> None:
@@ -281,7 +286,10 @@ class TaskManager:
 
         def sink(event: dict[str, Any]) -> None:
             self.add_metric_events(task_id, key, [{**event, **context}])
+            if key != "llm_events":
+                snapshot(key, {**event, **context})
 
+        sink.trace_metadata = {"task_id": task_id, **context}
         return sink
 
     def recover_stale_tasks(

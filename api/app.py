@@ -13,7 +13,7 @@ import logging
 import secrets
 import threading
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -24,6 +24,8 @@ from api.workers import QueueFull, TaskWorkerPool
 from core.config import Settings, get_settings
 from task.task_manager import TaskManager
 from task.task_model import TaskNotFoundError
+from observability.store import TraceStore, TraceNotFound, TraceCorruptError
+from observability.langfuse_exporter import LangfuseExporter
 from memory.model import MemoryStatus
 from memory.store import MemoryNotFoundError
 
@@ -33,6 +35,10 @@ logger = logging.getLogger(__name__)
 class TaskInputFile(BaseModel):
     oss_key: str = Field(min_length=1)
     filename: str | None = Field(default=None, min_length=1)
+
+
+class ExportResolution(BaseModel):
+    decision: Literal["retry", "accepted"]
 
 
 class CreateTaskRequest(BaseModel):
@@ -109,10 +115,13 @@ def create_app(
     orchestrator: AgentOrchestrator | None = None,
     settings: Settings | None = None,
     pool: TaskWorkerPool | None = None,
+    trace_store: TraceStore | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     orchestrator = orchestrator or build_orchestrator(settings)
     guard = Depends(_token_guard(settings))
+    trace_store = trace_store or TraceStore(settings.trace_store_dir, inline_bytes=settings.trace_inline_bytes)
+    exporter = LangfuseExporter(trace_store, settings)
     pool = pool or TaskWorkerPool(
         _task_handler(orchestrator),
         max_workers=settings.task_max_workers,
@@ -124,11 +133,13 @@ def create_app(
         _recover_stale(orchestrator.task_manager, settings, "on startup")
         stop = _start_reaper(orchestrator.task_manager, settings)
         pool.start()
+        exporter.start()
         try:
             yield
         finally:
             stop.set()
             pool.stop()
+            exporter.stop()
 
     app = FastAPI(title="Document Specialist Agent", lifespan=lifespan)
 
@@ -164,6 +175,51 @@ def create_app(
             return orchestrator.task_manager.get_task(task_id).to_dict()
         except TaskNotFoundError:
             raise HTTPException(status_code=404, detail="task not found")
+
+    def task_trace(task_id: str):
+        try:
+            orchestrator.task_manager.get_task(task_id)
+            return trace_store.for_task(task_id)
+        except (TaskNotFoundError, TraceNotFound):
+            raise HTTPException(status_code=404, detail="task or trace not found")
+        except (TraceCorruptError, OSError, ValueError):
+            raise HTTPException(status_code=503, detail="trace data unavailable")
+
+    @app.get("/tasks/{task_id}/trace", dependencies=[guard])
+    def get_task_trace(task_id: str):
+        return task_trace(task_id)
+
+    @app.get("/tasks/{task_id}/trace/export", dependencies=[guard])
+    def get_trace_export(task_id: str):
+        data = task_trace(task_id)
+        try:
+            state = exporter.state(data["manifest"]["trace_id"])
+            return {"enabled": settings.langfuse_enabled, "disabled_reason": exporter.disabled_reason,
+                    "trace_id": data["manifest"]["trace_id"],
+                    "destination_matches": state.get("destination", exporter.destination) == exporter.destination,
+                    "local_capture_status": data["capture_status"], "export": state}
+        except (OSError, ValueError):
+            raise HTTPException(status_code=503, detail="export state unavailable")
+
+    @app.post("/tasks/{task_id}/trace/export/{observation_id}/resolve", dependencies=[guard])
+    def resolve_trace_export(task_id: str, observation_id: str, request: ExportResolution):
+        data = task_trace(task_id)
+        try:
+            return exporter.resolve(data["manifest"]["trace_id"], observation_id, request.decision)
+        except ValueError:
+            raise HTTPException(status_code=409, detail="observation cannot be resolved in current state")
+        except OSError:
+            raise HTTPException(status_code=503, detail="export state unavailable")
+
+    @app.get("/tasks/{task_id}/trace/payloads/{ref}", dependencies=[guard])
+    def get_trace_payload(task_id: str, ref: str):
+        data = task_trace(task_id)
+        try:
+            return trace_store.read_payload(data["manifest"]["trace_id"], ref)
+        except TraceNotFound:
+            raise HTTPException(status_code=404, detail="payload not found")
+        except (TraceCorruptError, OSError, ValueError):
+            raise HTTPException(status_code=503, detail="trace payload unavailable")
 
     @app.get("/tasks", dependencies=[guard])
     def list_tasks():
