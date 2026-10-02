@@ -6,6 +6,7 @@
 > 第 2–5 节保留上述基线的审计快照；后续实现进度以各任务下的执行记录为准。
 > 2026-09-26：P0-1、P0-2 已完成；P0-3、P0-4 已实现并提交验收说明，等待独立测试；P0-5 已补齐端到端场景、等待独立环境执行；P1-1 本地长期记忆、P1-2 独立 Evaluation 和 P1-3 Token/时延/成本计量已实现并完成分支交付材料；P2 及后续编号尚未开始。
 > 2026-09-28：离线验收已执行并回填到 `docs/verification/04`～`09`（被验收 SHA `b9bbe72`，全量 `364 passed, 1 skipped`）。P1-1 全部必查行为通过，可标记为已完成；P0-3、P0-4 主链路通过，但文档建议的细粒度聚焦测试未合入 `main`；P0-5 八条端到端场景通过，真实 Docker 烟测已执行但**未通过**（`security_smoke` 退出码 1，`timeout` 探针证明请求超时不是执行硬上限，延迟副作用仍会落地）。`security_smoke.py` 的错误状态断言已先行校准并重跑，现在能准确报告失败原因；真正的硬超时语义修复按独立安全任务处理，完成前 P0-5 不得收口。P1-2 Fake 评测九案例全通过，真实模型未跑；P1-3 聚焦与全量均通过。验收过程中修复了两处顺序相关循环导入（`470cb10`、`b9bbe72`）。
+> 2026-10-02：**P0-5 已完成**。原 HTTP/Jupyter 沙箱的硬超时语义被实测证伪（`timeout` 与 `hard_timeout` 都不终止执行，`cleanup_session` 不即时也不完备），改为"每次代码工具调用一个一次性容器 + `--network none` + 宿主侧 `docker exec`"，设计见 `docs/design/14_one_shot_execution_migration.md`。收口证据：真机烟测 14/14、真实 DeepSeek 端到端 SUCCESS（产物校验通过）、全量 `441 passed, 3 skipped`、Linux 符号链接用例 3/3 实际执行。`feat/one-shot-execution` 已合并回 `main`。
 
 ## 1. 最终定位
 
@@ -467,7 +468,30 @@ P0-3。
 
 ### P0-5：补齐 Harness V1 回归测试和真实验证记录
 
-**状态：离线八条场景通过；真实沙箱烟测未通过（测量脚本已校准；`hard_timeout` 探针 8/8 泄漏、`cleanup_session` 探针在脱离进程组场景泄漏，一次性容器探针通过全部安全门槛——强杀 0.50s、零延迟副作用、并发隔离、无 Docker Socket 暴露；Jupyter 依赖审计已完成。迁移设计经第一次评审为有条件通过，已完成 7 项修订并冻结 5 项决策（不保留自动降级、固定镜像摘要、固定非 root UID/GID、启用只读根文件系统、性能重新实测），见 `docs/design/14_one_shot_execution_migration.md`：保留 `/home/gem/workspace/tasks/<task_id>` 规范路径、控制文件与产物分离、补全产物提交协议、修正输出 spool 与 P0-3 的衔接、按精确 Container ID 验证消失、固定额外延迟修正为 ≥1.33s/次，工期 9–11.5 工程师日。评审通过后建立 `feat/one-shot-execution` 分支。证据见 `docs/verification/10`、`11`、`12`、`13`）（2026-09-28，`main`）**
+**状态：已完成（2026-10-02，`feat/one-shot-execution` 合并回 `main`）**
+
+收口依据（`docs/verification/06_harness_v1.md` 第 7 节五条全部满足）：
+
+- 八条 Harness V1 端到端场景通过（`tests/test_harness_v1_scenarios.py` 8 passed）；
+- 全量 pytest 通过：**441 passed, 3 skipped**（3 项为本机 Windows 无符号链接权限；
+  已在 `python:3.12-slim` 容器中实际执行并通过：`test_rejects_symlinked_artifact`、
+  `test_commit_rejection_is_a_retryable_error`、`test_remote_path_guard_checks_real_symlinks`）；
+- 真实 Docker 安全烟测通过：一次性容器后端 **14/14**，含超时零延迟副作用、
+  按精确 Container ID 确认容器消失（`docs/verification/14_one_shot_execution_smoke.md`）；
+- 真实 DeepSeek 端到端成功：`SUCCESS`、31.7s、total_tokens=50103、
+  产物 `reports/<task_id>/region_summary.csv`（49 bytes）、`require_artifact` 校验通过
+  （`docs/verification/15_real_llm_e2e_attempt.md`）；
+- 环境、SHA 与完整输出均已记录，验收后工作区干净。
+
+实现与决策证据链：`docs/verification/10`（`hard_timeout` 8/8 泄漏）、`11`
+（`cleanup_session` 脱离进程组泄漏）、`12`（一次性容器 15 项前置探针）、`13`
+（Jupyter 依赖审计）、`14`/`15`（真机与端到端），设计见
+`docs/design/14_one_shot_execution_migration.md`（含 §3.13 实现期修正与 §3.14 验收结果）。
+
+期间发现并修复的真实缺陷：两处顺序相关循环导入、`security_smoke` 状态断言、
+`--read-only` 下嵌套挂载点、`docker exec -w` 缺失、宿主超时误用 HTTP grace
+（含最终纠正为"到点即销毁、1s 仅用于确认清理"）、`out/` 路径漂移、
+提交协议拒绝合法嵌套产物、Planner 未知字段导致整单失败。
 
 本轮新增 `tests/test_harness_v1_scenarios.py`，通过统一的
 `AgentOrchestrator.run` 入口覆盖静态计划、失败换路、局部重规划、大结果卸载与

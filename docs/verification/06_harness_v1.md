@@ -3,9 +3,11 @@
 > 记录日期：2026-09-18  
 > 实现分支：`feat/harness-p0-5`  
 > 开发基线：`feat/harness-p0-4` / `195ba1d`  
-> 当前状态：离线回归已于 2026-09-28 执行并通过（见 4.2 节）；真实 Docker 烟测同日已
-> 执行但**未通过**——`security_smoke` 退出码 1，`timeout` 探针暴露"超时不是硬上限"
-> （见 5.3 节），P0-5 尚未收口。
+> 当前状态：离线回归通过；真实 Docker 烟测当日未通过（见 5.3 节），随后通过一次性容器
+> 后端解决。**2026-10-02 P0-5 已收口**：真机烟测 14/14、真实 DeepSeek 端到端 SUCCESS、
+> 全量 `441 passed, 3 skipped`、Linux 符号链接用例 3/3 实际执行，详见
+> [`14_one_shot_execution_smoke.md`](14_one_shot_execution_smoke.md) 与
+> [`15_real_llm_e2e_attempt.md`](15_real_llm_e2e_attempt.md) 第 11 节。
 
 本文档是一次验收记录，不是对
 [`01_security.md`](01_security.md) 的覆盖或改写。`01_security.md` 保留当时的历史结论；
@@ -284,6 +286,13 @@ exit_code=1
 5.1 节命令全部执行，`security_smoke` 退出码为 1，`timeout` 探针未通过（见 5.3）。
 因此本页结论是"八条离线端到端场景通过、真实沙箱超时语义不满足 5.2 节要求"，
 `task_points.md` 中 P0-5 仍不能标记为已完成。
+
+> 后续进展（2026-09-28 ~ 10-02）：条件 3 已满足。硬超时语义改为"每次代码工具调用
+> 一个一次性容器，到点强制销毁并按精确 Container ID 确认消失"，真机烟测 14/14、
+> 真实 DeepSeek 端到端 SUCCESS、全量 `441 passed, 3 skipped`、Linux 符号链接用例
+> 3/3 实际执行。**P0-5 于 2026-10-02 收口**，证据见
+> [`14_one_shot_execution_smoke.md`](14_one_shot_execution_smoke.md) 与
+> [`15_real_llm_e2e_attempt.md`](15_real_llm_e2e_attempt.md) 第 11 节。
 
 剩余工作分两步，且**不能**用第一步代替第二步：
 
