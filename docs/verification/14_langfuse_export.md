@@ -151,28 +151,38 @@ python -m pytest tests/test_langfuse_exporter.py tests/test_trace_model.py \
 | release | 150/150 均为 `08586423afd1ed0c01ba0b7e6ddf4766948443c5` |
 | Token 交叉核对 | 本地 62532 = 远端 generation `usageDetails.total` 合计 62532 |
 
-这一轮同时命中了两个真实场景，验证了失败路径不是纸面设计：
+这一轮额外命中了一条真实的失败路径并跑完人工处理闭环：
 
-1. **索引延迟**：导出刚结束时远端只有 146 条，其中 3 条本地已 `accepted` 却查不到；
-   等待约 2 分钟后复读为 149 条，说明"端点已接收 ≠ 立即可读"。
-2. **不确定发送 + 人工处理**：`context_events` 一条操作首次发送超时，本地回执为
-   `uncertain`（不再自动重发）。用 `GET /tasks/{id}/trace/export` 确认其未出现在远端后，
-   `POST /tasks/{id}/trace/export/5c73039ca7fee94b/resolve` 传 `{"decision":"retry"}`
-   返回 200（`previous_status=uncertain`），导出线程重发后转为 `accepted`，远端随即出现该 ID；
-   最终 150/150 对齐。
+**超时 → `uncertain` → 人工核对 → 重发成功（已验证）**：`context_events` 一条操作首次发送
+超时，本地回执为 `uncertain` 且不自动重发。用 `GET /tasks/{id}/trace/export` 确认其未出现在
+远端后，`POST /tasks/{id}/trace/export/5c73039ca7fee94b/resolve` 传 `{"decision":"retry"}`
+返回 200（`previous_status=uncertain`），导出线程重发后转为 `accepted`，远端随即出现该 ID；
+最终 150/150 对齐。
 
-### 遗留问题与注意事项
+### 已观察到的运行行为（非缺陷，非待办）
 
-1. 远端回读必须走 v4 的 v2 observations（含时间窗与 `fields`），旧接口返回 410；
-   完整命令、字段含义与分页/对账示例见上文「远端回读（v4）」。
-2. 导出为「每个 ended 操作一次 POST」，实测吞吐约 **1 span/秒**：123 个操作约需 **2 分钟**
-   才全部落地；首个短窗口内会看到 pending/sending 属正常。如需更快收敛，可考虑把同批 Span
-   合并到一个 OTLP 请求。
-3. 进程在根操作 still-sending 时退出，回执保持 `sending`，下次启动按设计转为 `uncertain`
-   并继续发送（本轮已实测：上一轮遗留的 2 条在下一轮启动后转为 `accepted`）。
-4. `docs/verification/` 与 `docs/design/` 存在编号重叠：Trace 系列 10–14 与一次性容器系列
-   10–15 同名编号并存，建议后续统一编号或加前缀（本次未改，避免破坏既有引用）。
-5. 观测到的模型名差异：本地配置 `LLM_MODEL=deepseek-chat`，响应中的 `model=deepseek-flash`，
-   Langfuse 上 Generation 的 model 取响应值，请求 input 中保留请求值。属预期差异，非缺陷。
-6. 未覆盖项：429 退避、5xx/超时转 uncertain、非法 resolve、跨任务串线、超大 payload 引用等
-   仅由离线用例覆盖，本轮未构造真实端点故障。
+- **导出吞吐约 1 span/秒**：导出是「每个 ended 操作一次 POST」，150 个操作约需 2 分钟才全部
+  落地；短窗口内看到 pending/sending 属正常，判定是否送达应看每条操作的回执状态。
+- **端点接收 ≠ 立即可读（索引延迟）**：导出刚结束时远端只有 146 条，其中 3 条本地已
+  `accepted` 却暂时查不到，等待约 2 分钟后复读为 149 条。远端对账应留出索引时间，不要以
+  首次读取结果判定丢数据。
+- **进程退出遗留 `sending` 会续传**：根操作仍在发送时退出，回执保持 `sending`，下次启动按
+  设计转 `uncertain` 并继续发送（本轮实测：上一轮遗留的 2 条在下一轮启动后转为 `accepted`）。
+- **模型名差异**：本地配置 `LLM_MODEL=deepseek-chat`，响应中的 `model=deepseek-flash`；
+  Langfuse 上 Generation 的 model 取响应值，请求 input 中保留请求值。属预期差异。
+
+### T5 待验收项（尚未真实联调，目前仅有离线用例覆盖）
+
+1. 429 限流：指数退避到上限后转 `exhausted`，期间主任务持续运行。
+2. 5xx、连接异常、重定向与部分接收：转 `uncertain` 且不重复发送已可能入库的操作。
+3. 非法 `resolve`：不可解析状态返回 409；跨任务的 observation 不可被改写。
+4. 超大 payload：远端明确显示引用/省略，并能回到本地认证接口读回完整记录。
+5. 两个任务并发运行：ID、父子关系、参数与结果不串线。
+6. 本地磁盘写失败：日志可见、不改变业务结果，修复磁盘后回执正常。
+
+### 已知限制（本轮不处理）
+
+- 远端回读必须走 v4 的 v2 observations（含时间窗与 `fields`），旧 trace/observation 接口对
+  新建组织返回 410；完整命令与对账示例见上文「远端回读（v4）」。
+- `docs/verification/` 与 `docs/design/` 编号重叠：Trace 系列 10–14 与一次性容器系列 10–15
+  并存，本次保留现状以免破坏既有引用。

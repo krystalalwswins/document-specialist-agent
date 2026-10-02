@@ -149,10 +149,14 @@ Content-Type: application/json
 仅支持同一 TraceStore 单进程部署（与现有文件任务存储一致），不支持多个 Uvicorn worker。
 轮询会扫描目录，适合当前本地原型；大量历史任务需要后续索引/清理策略。
 只验证“记录与传输是否正确”，不评价 Agent 的业务答案；没有读取模型隐藏思维。
-2026-10-02 已完成离线用例与真实实例联调：123 个 ended 操作全部 `accepted`，远端 observation
-数量与 ID 集合、Token 合计均与本地一致；证据、任务 ID 与 Trace ID 见
+2026-10-02 已完成离线用例与真实实例联调：两轮任务（123 与 150 个 ended 操作）全部
+`accepted`，远端 observation 数量与 ID 集合、Token 合计均与本地一致，设置
+`TRACE_CODE_VERSION` 后远端每个操作都带 `release`；证据、任务 ID 与 Trace ID 见
 [`docs/verification/14_langfuse_export.md`](../verification/14_langfuse_export.md)。
-未覆盖的仍是真实端点故障路径（429/5xx/超时/非法 resolve）。
+真实故障路径已验证「超时 → `uncertain` → 人工核对 → `resolve` 重发成功」；
+仍未真实联调的是 429 退避、5xx/连接异常/重定向/部分接收、非法 `resolve`、
+超大 payload 引用回读、并发串线与本地磁盘写失败。索引延迟与约 1 span/秒的导出吞吐
+属已观察到的运行行为。
 
 官方参考：
 - https://langfuse.com/integrations/native/opentelemetry
