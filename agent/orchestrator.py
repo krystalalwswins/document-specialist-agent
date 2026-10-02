@@ -40,6 +40,7 @@ class AgentOrchestrator:
         budget_controller: BudgetController | None = None,
         trace_recorder=None,
         trace_code_version: str | None = None,
+        sandbox_supervisor: object | None = None,
     ) -> None:
         self._task_manager = task_manager
         self._planner = planner
@@ -52,6 +53,9 @@ class AgentOrchestrator:
         self._budget_controller = budget_controller
         self._trace_recorder = trace_recorder
         self._trace_code_version = trace_code_version
+        # Held so application startup can run the environment preflight
+        # explicitly instead of doing Docker work inside a constructor.
+        self._sandbox_supervisor = sandbox_supervisor
 
     @property
     def task_manager(self) -> TaskManager:
@@ -60,6 +64,10 @@ class AgentOrchestrator:
     @property
     def memory_service(self) -> "MemoryService | None":
         return self._memory_service
+
+    @property
+    def sandbox_supervisor(self) -> object | None:
+        return self._sandbox_supervisor
 
     def run(
         self,

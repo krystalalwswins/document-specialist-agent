@@ -3,7 +3,11 @@
 > 记录日期：2026-09-18  
 > 实现分支：`feat/harness-p0-5`  
 > 开发基线：`feat/harness-p0-4` / `195ba1d`  
-> 当前状态：端到端 Fake LLM 场景和证据矩阵已提交，完整 pytest 与真实 Docker 验证待独立 Codex 执行。
+> 当前状态：离线回归通过；真实 Docker 烟测当日未通过（见 5.3 节），随后通过一次性容器
+> 后端解决。**2026-10-02 P0-5 已收口**：真机烟测 14/14、真实 DeepSeek 端到端 SUCCESS、
+> 全量 `441 passed, 3 skipped`、Linux 符号链接用例 3/3 实际执行，详见
+> [`14_one_shot_execution_smoke.md`](14_one_shot_execution_smoke.md) 与
+> [`15_real_llm_e2e_attempt.md`](15_real_llm_e2e_attempt.md) 第 11 节。
 
 本文档是一次验收记录，不是对
 [`01_security.md`](01_security.md) 的覆盖或改写。`01_security.md` 保留当时的历史结论；
@@ -11,15 +15,15 @@
 
 ## 1. 验收对象
 
-| 项目 | 验收前填写 |
+| 项目 | 验收结果 |
 | --- | --- |
-| Commit SHA | `PENDING` |
-| 工作区状态 | `PENDING` |
-| 操作系统 | `PENDING` |
-| Python / pytest | `PENDING` |
-| Docker Engine / Compose | `PENDING` |
-| `agent-sandbox` SDK | `PENDING`（依赖锁定值为 `0.0.30`） |
-| 沙箱镜像 tag / image ID | `PENDING` |
+| Commit SHA | `b9bbe72c57831572364c2ac8bfa7a62229514189` |
+| 工作区状态 | 执行测试时为空；随后仅新增本验收记录文件 |
+| 操作系统 | Windows 11 25H2（build 26200） |
+| Python / pytest | 3.13.2（工作区 `.venv`）/ 9.1.1 |
+| Docker Engine / Compose | 29.7.2 / v5.4.0（Docker Desktop 4.87.0），第 5 节已执行 |
+| `agent-sandbox` SDK | `0.0.30`（`requirements.txt` 锁定） |
+| 沙箱镜像 tag / image ID | `...all-in-one-sandbox:1.11.0` / `sha256:6328d7fd2f0ff0b4c147c3d05b3df1ce331f4a482eb6e550ecd64ed1fcf906e7` |
 
 验收者必须在执行命令前填写准确 SHA，并在完成后附上 `git status --short`。
 禁止将未执行的项目填写为 PASS。
@@ -78,19 +82,44 @@ Linux / macOS：
 .venv/bin/python -m pytest -q
 ```
 
-### 4.2 结果（验收后填写）
+### 4.2 结果
 
-- Harness V1 聚焦测试：`PENDING`
-- 完整 pytest：`PENDING`
-- 新增/修改测试数量：`PENDING`
-- 已知环境跳过：`PENDING`
-- 失败堆栈：`PENDING`
+- Harness V1 聚焦测试：`8 passed in 1.63s`
+- 完整 pytest：`364 passed, 1 skipped, 1 warning in 11.95s`
+- 新增/修改测试数量：新增 12 个测试文件（70 个测试函数）；修改 7 个既有测试文件
+- 已知环境跳过：1 项，`tests/test_security.py:102`（Windows 无法创建符号链接）
+- 失败堆栈：无
 
 完整输出：
 
 ```text
-PENDING
+........................................................................ [ 19%]
+........................................................................ [ 39%]
+........................................................................ [ 59%]
+......................................................s................. [ 78%]
+........................................................................ [ 98%]
+.....                                                                    [100%]
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_security.py:102: OS/user cannot create symlinks (on Windows: enable Developer Mode)
+364 passed, 1 skipped, 1 warning in 11.95s
 ```
+
+聚焦场景输出：
+
+```text
+........                                                                 [100%]
+8 passed in 1.63s
+```
+
+新增的 12 个测试文件为 `test_harness_v1_scenarios.py`、`test_executor_plan_binding.py`、
+`test_plan_state.py`、`test_memory_{store,policy,extractor,service,prompting,api}.py`、
+`test_orchestrator_memory.py`、`test_metering.py`、`test_evaluation.py`。
+
+> 验收起始状态必须记录：验收前 `main`（`4899a5c`）直接执行 `python -m pytest -q` 会在
+> **收集阶段**失败，原因是 `memory/extractor.py` 顶层的 `agent.llm_client` 导入构成
+> `agent.llm_client → retry → tools → memory.extractor` 环；另外以 `context` 为首个导入
+> 的入口（例如 P1-3 文档推荐的 `tests/test_metering.py`）会触发 `context/compactor.py`
+> 的同类环。两处均在本次验收中修复（`470cb10`、`b9bbe72`）后，上表结果才成立。
 
 ## 5. 真实 Docker 安全烟测
 
@@ -117,17 +146,122 @@ docker inspect doc-agent-sandbox
 - timeout 探针等待后，延迟副作用文件不存在；
 - 脚本退出码为 0。
 
-### 5.3 结果（验收后填写）
+### 5.3 结果
 
-- `security_smoke`：`PENDING`
-- timeout probe：`PENDING`
-- 退出码：`PENDING`
+- `security_smoke`：**FAILED**（退出码 `1`，中止在 timeout 探针断言）
+- timeout probe：**不通过**：请求的 `timeout` 不是执行硬上限，延迟副作用仍会落地
+- 退出码：`1`
 
-完整输出：
+实测环境：
+
+| 项目 | 值 |
+| --- | --- |
+| Docker Client / Server | 29.7.2 / 29.7.2（Docker Desktop 4.87.0，Engine API 1.55） |
+| Docker Compose | v5.4.0 |
+| 沙箱镜像 | `enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:1.11.0` |
+| 镜像 image ID | `sha256:6328d7fd2f0ff0b4c147c3d05b3df1ce331f4a482eb6e550ecd64ed1fcf906e7` |
+| 容器实测配额 | Memory `4294967296`；MemorySwap == Memory；PidsLimit `512`；NanoCpus `2000000000`（2 CPU） |
+| 端口绑定 | `127.0.0.1:8080 -> 8080/tcp`（仅本机） |
+| 容器健康 | `healthy` |
+| `agent-sandbox` SDK | `0.0.30` |
+
+`.venv\Scripts\python.exe -m demo.security_smoke` 原始输出：
 
 ```text
-PENDING
+PASS running container quotas: {'Memory': 4294967296, 'NanoCpus': 2000000000, 'PidsLimit': 512, 'MemorySwap': 4294967296}
+PASS real file write/read
+PASS traversal denied
+PASS independent Jupyter sessions
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  ...
+  File "D:\gitcode\document-specialist-agent\demo\security_smoke.py", line 54, in main
+    assert response.status == "timeout" and response.execution_uncertain, response.text
+AssertionError: [error] Code execution error
+exit_code=1
 ```
+
+该断言与镜像实际行为不符，属于测量工具本身的缺陷，已先行修复（见 5.3.3）。修复后
+重跑，失败原因变为真实问题：
+
+```text
+PASS running container quotas: {'Memory': 4294967296, 'NanoCpus': 2000000000, 'PidsLimit': 512, 'MemorySwap': 4294967296}
+PASS real file write/read
+PASS traversal denied
+PASS independent Jupyter sessions
+PASS sandbox reported a non-ok status (observed='error')
+PASS sandbox envelope reported success=false (observed=False)
+PASS client marked the result execution_uncertain (observed=True)
+PASS Harness maps it to a failed ToolResult (observed=False)
+PASS Harness marks it terminal, so it is never replayed (observed=True)
+     status='error' error='Code execution error' elapsed=3.49s
+FAIL delayed side effect exists: the timed-out execution kept running past the requested timeout (1s) and wrote /home/gem/workspace/security-probe-...-late.txt
+FAIL real smoke checks: delayed side effect after timeout
+exit_code=1
+```
+
+#### 5.3.1 根因诊断
+
+用一次性探针固定请求的 `timeout`、改变被测代码的 `sleep` 时长，记录调用耗时、返回状态
+与"延迟副作用文件"是否出现（探针为临时文件，取证后已删除）：
+
+| 代码 sleep | 请求 timeout | 实际耗时 | 返回 status | 延迟副作用文件 |
+| --- | --- | --- | --- | --- |
+| 3s | 1s | 3.49s | `error`（`execution_uncertain=True`） | **存在** |
+| 2s | 1s | 2.56s | `error`（`execution_uncertain=True`） | **存在** |
+| 6s | 1s | 6.62s | `error`（`execution_uncertain=True`） | **存在** |
+| 12s | 1s | 6.60s | `error`（`execution_uncertain=True`） | 不存在 |
+| 12s | 8s | 12.53s | `error`（`execution_uncertain=True`） | **存在** |
+
+原始响应体为 `ResponseJupyterExecuteResponse(success=False, message="Code execution error")`，
+`data.status="error"`，`outputs[0]` 为 `output_type="error"`、`ename="KernelError"`、
+`evalue=""`。
+
+结论：
+
+1. `timeout` **不是**执行硬上限。请求 1 秒时，2 秒与 6 秒的代码仍完整跑到结束并产生
+   副作用；请求 8 秒时，12 秒的代码同样跑完。有效终止点约在"请求值 + 数秒"处，与请求
+   值并不同步，也不受调用方精确控制。
+2. 因此 5.2 节"timeout 探针等待后延迟副作用文件不存在"**不成立**：副作用是否发生取决于
+   它落在有效终止点之前还是之后。
+3. 该镜像返回 `success=false` + `KernelError`，`SandboxClient._normalize` 走
+   "success 为 False"分支，映射为 `status="error"`、`execution_uncertain=True`。
+   原 `demo/security_smoke.py` 里 `status == "timeout"` 的断言在 1.11.0 上**永远不成立**，
+   脚本会在真正的安全断言之前中止——测量工具缺陷，已修复（见 5.3.3）。
+
+#### 5.3.3 烟测脚本修订（已完成）
+
+修订前的脚本用 `assert response.status == "timeout"` 判定超时，会被状态映射差异提前
+截断，导致下面真正的"延迟副作用仍发生"无法被稳定检测。修订后的判定逻辑：
+
+1. 不再要求 `status == "timeout"`，把 `error` 与 `timeout` 都视为非成功结果；
+2. 核心契约断言改为：非 `ok` 状态、原始信封 `success is False`、
+   `execution_uncertain is True`、`execution_to_tool_result` 返回失败且 `terminal is True`
+   （即 Harness 判为终止性错误、禁止重放）；
+3. **无论状态如何映射**，都继续等待到"代码延迟 + 余量"之后再检查延迟副作用文件；
+4. 只要延迟副作用文件存在，脚本仍然失败并给出明确原因。
+
+探针参数同时从 `sleep 6 / timeout 1` 改为 `sleep 3 / timeout 1`：原来的组合恰好落在服务端
+有效终止点附近，属于边界竞态；3 秒的副作用稳定落在终止点之前，失败可复现而非偶然。
+
+> 这一步是校准测量工具，**不代表接受当前风险**。修复后脚本依然失败，且失败原因正是
+> 真正的安全问题；P0-5 继续保持未完成。
+
+#### 5.3.2 5.2 节逐项判定
+
+| 5.2 节要求 | 结果 |
+| --- | --- |
+| CPU、内存、swap、PID 配额与 compose 配置一致 | 通过 |
+| 宿主端口绑定符合本地安全配置 | 通过（仅 `127.0.0.1:8080`） |
+| 文件写入/读取、越界路径拒绝、独立执行会话通过 | 通过 |
+| timeout 返回明确的超时或不确定状态 | 部分通过：wrapper 标记 `execution_uncertain=True`，但 `status` 为 `error` 而非 `timeout` |
+| timeout 探针等待后，延迟副作用文件不存在 | **不通过**（见 5.3.1） |
+| 脚本退出码为 0 | **不通过**（退出码 1；修订后失败原因为"延迟副作用仍存在"，不再是状态断言） |
+
+> 分层结论（重要）：`tools/sandbox_tool.py` 使用
+> `terminal = execution_uncertain or status == "timeout"` 判定，因此在上述场景中工具错误
+> **仍然是终止性错误**，任务不会重放这段代码——Harness 层的"不确定即终止、禁止重放"
+> 成立。不成立的是更下面一层：沙箱没有在请求的超时点真正停下代码，副作用仍可能落地。
 
 ## 6. 必须保留的安全边界
 
@@ -147,3 +281,29 @@ PENDING
 3. 真实 Docker `security_smoke` 退出码为 0，timeout probe 通过；
 4. 本页填入准确环境、SHA 与完整输出；
 5. 验收后工作区无意外改动。
+
+本次（2026-09-28）达成情况：条件 1、2、4、5 满足；**条件 3 不满足**。Docker 已可用，
+5.1 节命令全部执行，`security_smoke` 退出码为 1，`timeout` 探针未通过（见 5.3）。
+因此本页结论是"八条离线端到端场景通过、真实沙箱超时语义不满足 5.2 节要求"，
+`task_points.md` 中 P0-5 仍不能标记为已完成。
+
+> 后续进展（2026-09-28 ~ 10-02）：条件 3 已满足。硬超时语义改为"每次代码工具调用
+> 一个一次性容器，到点强制销毁并按精确 Container ID 确认消失"，真机烟测 14/14、
+> 真实 DeepSeek 端到端 SUCCESS、全量 `441 passed, 3 skipped`、Linux 符号链接用例
+> 3/3 实际执行。**P0-5 于 2026-10-02 收口**，证据见
+> [`14_one_shot_execution_smoke.md`](14_one_shot_execution_smoke.md) 与
+> [`15_real_llm_e2e_attempt.md`](15_real_llm_e2e_attempt.md) 第 11 节。
+
+剩余工作分两步，且**不能**用第一步代替第二步：
+
+1. ~~修订 `demo/security_smoke.py`，使其断言与镜像实际返回的
+   `success=false` + `execution_uncertain=True` 一致。~~ 已完成（见 5.3.3），
+   脚本现在准确报告失败原因；
+2. 作为独立安全任务处理真正的语义问题：把"沙箱在请求超时点停下代码"变成硬性保证，
+   而不是依赖 `execute_code(timeout=...)` 的服务端语义。修复前 P0-5 不得收口，
+   也不得把本页任何一项标记为完全通过。已完成的 `hard_timeout` 能力探针证明 shell
+   路径同样不能终止执行（8/8 泄漏），证据见
+   [`10_hard_timeout_probe.md`](10_hard_timeout_probe.md)；`cleanup_session` 能力探针
+   证明会话级终止既不即时也不完备（脱离进程组场景泄漏），证据见
+   [`11_cleanup_session_probe.md`](11_cleanup_session_probe.md)。两条候选路线均已排除，
+   下一步转向一次性容器评估。

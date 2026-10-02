@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from jsonschema import Draft202012Validator
 
-from agent.llm_client import LLMClient
-
 from .model import MemoryCandidate, MemorySourceKind, MemoryType
+
+if TYPE_CHECKING:
+    # Type-only import: a runtime import here closes the cycle
+    # agent.llm_client -> retry.retry_policy -> tools -> memory.extractor.
+    from agent.llm_client import LLMClient
 
 
 EXTRACT_MEMORIES_TOOL = {

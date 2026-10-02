@@ -115,6 +115,8 @@ class Executor:
         registry: ToolRegistry,
         task_manager: TaskManager,
         max_iterations: int = 8,
+        iterations_per_step: int = 2,
+        iterations_overhead: int = 4,
         retry_policy: RetryPolicy | None = None,
         planner: Planner | None = None,
         max_replans: int = 2,
@@ -127,6 +129,8 @@ class Executor:
         self._registry = registry
         self._task_manager = task_manager
         self._max_iterations = max_iterations
+        self._iterations_per_step = iterations_per_step
+        self._iterations_overhead = iterations_overhead
         self._retry_policy = retry_policy or RetryPolicy()
         # None means "no local replanning configured": a request becomes an observation.
         self._planner = planner
@@ -178,7 +182,8 @@ class Executor:
             else None
         )
         replans_used = 0
-        for iteration in range(1, self._max_iterations + 1):
+        iteration_budget = self._iteration_budget(state.plan)
+        for iteration in range(1, iteration_budget + 1):
             force_compaction = (
                 self._budget_controller.before_call(
                     task_id, phase="execute", iteration=iteration
@@ -262,7 +267,23 @@ class Executor:
                 else:
                     state = self._run_tool_call(task_id, state, call, messages)
 
-        raise MaxIterationsError(f"exceeded {self._max_iterations} tool-calling iterations")
+        raise MaxIterationsError(
+            "exceeded %d tool-calling iterations (budget = min(%d, %d * steps + %d))"
+            % (
+                iteration_budget,
+                self._max_iterations,
+                self._iterations_per_step,
+                self._iterations_overhead,
+            )
+        )
+
+    def _iteration_budget(self, plan: Plan) -> int:
+        """min(absolute cap, per-step allowance) -- a policy, not a guarantee."""
+        steps = len(getattr(plan, "steps", []) or [])
+        if steps <= 0:
+            return self._max_iterations
+        allowance = self._iterations_per_step * steps + self._iterations_overhead
+        return max(1, min(self._max_iterations, allowance))
 
     def _llm_sink(
         self, task_id: str, *, phase: str, iteration: int | None = None
@@ -321,6 +342,15 @@ class Executor:
             f"- Call {REQUEST_REPLAN} only when a tool failed unrecoverably, required data "
             "is missing, completion criteria cannot be met, or the plan's dependencies no "
             "longer hold. Completed steps are kept unchanged.",
+            "",
+            "Execution rules:",
+            "- Code runs in a fresh one-shot sandbox: variables do not persist between "
+            "calls, so pass results through files.",
+            "- Only what you print() is returned. A trailing expression is echoed as well, "
+            "but print explicitly whenever a value matters.",
+            "- The task directory holds your inputs (read-only). Write every new file under "
+            "out/ (for example out/report.csv); out/ persists for the whole task, so a file "
+            "you write there is still readable at the same path in later calls.",
             "",
             f"Plan v{state.version} progress:",
             f"- completed: {', '.join(state.completed_ids()) or '(none)'}",

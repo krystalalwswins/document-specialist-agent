@@ -5,6 +5,8 @@
 > 审计基线：`1a2b7df12258f33e6912cb48f7118d051e38ee2b`  
 > 第 2–5 节保留上述基线的审计快照；后续实现进度以各任务下的执行记录为准。
 > 2026-09-26：P0-1、P0-2 已完成；P0-3、P0-4 已实现并提交验收说明，等待独立测试；P0-5 已补齐端到端场景、等待独立环境执行；P1-1 本地长期记忆、P1-2 独立 Evaluation 和 P1-3 Token/时延/成本计量已实现并完成分支交付材料；P2 及后续编号尚未开始。
+> 2026-09-28：离线验收已执行并回填到 `docs/verification/04`～`09`（被验收 SHA `b9bbe72`，全量 `364 passed, 1 skipped`）。P1-1 全部必查行为通过，可标记为已完成；P0-3、P0-4 主链路通过，但文档建议的细粒度聚焦测试未合入 `main`；P0-5 八条端到端场景通过，真实 Docker 烟测已执行但**未通过**（`security_smoke` 退出码 1，`timeout` 探针证明请求超时不是执行硬上限，延迟副作用仍会落地）。`security_smoke.py` 的错误状态断言已先行校准并重跑，现在能准确报告失败原因；真正的硬超时语义修复按独立安全任务处理，完成前 P0-5 不得收口。P1-2 Fake 评测九案例全通过，真实模型未跑；P1-3 聚焦与全量均通过。验收过程中修复了两处顺序相关循环导入（`470cb10`、`b9bbe72`）。
+> 2026-10-02：**P0-5 已完成**。原 HTTP/Jupyter 沙箱的硬超时语义被实测证伪（`timeout` 与 `hard_timeout` 都不终止执行，`cleanup_session` 不即时也不完备），改为"每次代码工具调用一个一次性容器 + `--network none` + 宿主侧 `docker exec`"，设计见 `docs/design/14_one_shot_execution_migration.md`。收口证据：真机烟测 14/14、真实 DeepSeek 端到端 SUCCESS（产物校验通过）、全量 `441 passed, 3 skipped`、Linux 符号链接用例 3/3 实际执行。`feat/one-shot-execution` 已合并回 `main`。
 
 ## 1. 最终定位
 
@@ -48,7 +50,7 @@ Harness V1 的核心能力固定为：
 | Executor 已把 Tool Call 绑定到计划步骤 | **不正确。**Executor 仅把计划摘要放入 Prompt；运行时创建的 `TaskStep` 实际对应工具调用，名称也是工具名，没有计划步骤 ID。 |
 | 已支持工具失败后的局部重规划 | **不正确。**工具错误会回注模型，模型可以在 ReAct 循环中换路，但 Planner 不会收到执行观察，也不存在显式的局部重规划。 |
 | 已实现通用上下文治理 | **不正确。**`parse_document` 有字符截断并把完整 Markdown 留在沙箱，但还没有 Token 估算、通用大结果 Hook、result_ref 回读、消息组压缩和熔断。 |
-| 沙箱超时问题仍是当前阻塞项 | **已按项目最新真实验收结论更新为“已解决/已通过当前烟测门槛”。**当前实现使用一次一会话、finally 删除会话、超时/不确定状态终止任务且禁止重放；`security_smoke.py` 包含延迟写文件探针。仍需保留边界：该探针不能证明任意恶意派生进程都一定被杀死。 |
+| 沙箱超时问题仍是当前阻塞项 | **2026-09-28 真实 Docker 烟测后更正为“未通过”。**`security_smoke.py` 退出码 1：请求的 `timeout` 不是执行硬上限（请求 1s 时 2s/6s 代码仍跑完并产生副作用，请求 8s 时 12s 代码跑完），只有超过约"请求值 + 数秒"的有效终止点后代码才被停下。Harness 层仍成立：`execution_uncertain` 使工具错误成为终止性错误、任务不重放；但"超时即停止副作用"在沙箱层不成立。详见 `docs/verification/06_harness_v1.md` 第 5.3 节。 |
 | README 中的 242 passed / 1 skipped 是本次重新执行结果 | **不是。**这是当前 README 和提交记录中的基线，本次 GitHub 代码审计没有重新运行远端测试。 |
 
 > `docs/verification/01_security.md` 是 2026-09-07 的历史快照，仍记录当时“真实 Docker 未验证”。后续应新增当前验证记录，不应篡改历史快照。
@@ -313,7 +315,7 @@ P0-1。
 
 ### P0-3：实现通用工具大结果卸载与二次回读
 
-**状态：实现完成，待独立验收（2026-09-18，功能分支 `feat/harness-p0-3`）**
+**状态：主链路验收通过、细粒度用例未覆盖（2026-09-28，`main` / `b9bbe72`）**
 
 最小修改方案：保留既有 Tool Registry 与 ReAct 循环，在工具真实执行完成后、
 任务步骤落盘和 Tool Result 回注模型之前加入统一 `AfterToolCallHook`。小结果沿用
@@ -384,7 +386,7 @@ read_tool_output → Registry 注入 task_id → 限量分页回读 → Hook →
 
 ### P0-4：实现上下文预算、完整消息组压缩与熔断
 
-**状态：实现完成，待独立验收（2026-09-18，功能分支 `feat/harness-p0-4`）**
+**状态：主链路验收通过、细粒度用例未覆盖（2026-09-28，`main` / `b9bbe72`）**
 
 最小修改方案：不改变 P0-2 的计划运行时和 P0-3 的 Tool Result Hook，仅在每轮
 Executor 主模型调用之前增加 `ContextManager.prepare`。上下文先经 TokenEstimator
@@ -466,7 +468,30 @@ P0-3。
 
 ### P0-5：补齐 Harness V1 回归测试和真实验证记录
 
-**状态：测试与验证材料已实现，待独立执行（2026-09-18，功能分支 `feat/harness-p0-5`）**
+**状态：已完成（2026-10-02，`feat/one-shot-execution` 合并回 `main`）**
+
+收口依据（`docs/verification/06_harness_v1.md` 第 7 节五条全部满足）：
+
+- 八条 Harness V1 端到端场景通过（`tests/test_harness_v1_scenarios.py` 8 passed）；
+- 全量 pytest 通过：**441 passed, 3 skipped**（3 项为本机 Windows 无符号链接权限；
+  已在 `python:3.12-slim` 容器中实际执行并通过：`test_rejects_symlinked_artifact`、
+  `test_commit_rejection_is_a_retryable_error`、`test_remote_path_guard_checks_real_symlinks`）；
+- 真实 Docker 安全烟测通过：一次性容器后端 **14/14**，含超时零延迟副作用、
+  按精确 Container ID 确认容器消失（`docs/verification/14_one_shot_execution_smoke.md`）；
+- 真实 DeepSeek 端到端成功：`SUCCESS`、31.7s、total_tokens=50103、
+  产物 `reports/<task_id>/region_summary.csv`（49 bytes）、`require_artifact` 校验通过
+  （`docs/verification/15_real_llm_e2e_attempt.md`）；
+- 环境、SHA 与完整输出均已记录，验收后工作区干净。
+
+实现与决策证据链：`docs/verification/10`（`hard_timeout` 8/8 泄漏）、`11`
+（`cleanup_session` 脱离进程组泄漏）、`12`（一次性容器 15 项前置探针）、`13`
+（Jupyter 依赖审计）、`14`/`15`（真机与端到端），设计见
+`docs/design/14_one_shot_execution_migration.md`（含 §3.13 实现期修正与 §3.14 验收结果）。
+
+期间发现并修复的真实缺陷：两处顺序相关循环导入、`security_smoke` 状态断言、
+`--read-only` 下嵌套挂载点、`docker exec -w` 缺失、宿主超时误用 HTTP grace
+（含最终纠正为"到点即销毁、1s 仅用于确认清理"）、`out/` 路径漂移、
+提交协议拒绝合法嵌套产物、Planner 未知字段导致整单失败。
 
 本轮新增 `tests/test_harness_v1_scenarios.py`，通过统一的
 `AgentOrchestrator.run` 入口覆盖静态计划、失败换路、局部重规划、大结果卸载与
@@ -527,7 +552,7 @@ P0-3。
 
 ### P1-1：本地长期记忆（不做向量化）
 
-**状态：实现完成，待独立验收（2026-09-23，功能分支 `feat/harness-p1-1`）**
+**状态：已完成（2026-09-28，`main` / `b9bbe72`，聚焦 127 passed、全量 364 passed）**
 
 最小实现方案：保持 Task 轨迹继续使用 JSON 文件，不迁移现有存储；新增独立的
 SQLite MemoryStore。任务以 `user_id/project_id` 形成逻辑作用域，开始前执行作用域
@@ -585,7 +610,7 @@ SQLite MemoryStore。任务以 `user_id/project_id` 形成逻辑作用域，开�
 
 ### P1-2：建立独立 Evaluation
 
-**状态：实现完成，待独立执行（2026-09-24，功能分支 `feat/harness-p1-2`）**
+**状态：Fake 模式已完成（2026-09-28，`main` / `b9bbe72`，九案例 PASS）；真实模型未执行**
 
 最小实现方案：Evaluation 作为 Agent 主链之外的只读消费者，不修改 Orchestrator、
 Planner、Executor 或 Task 状态。版本化案例仍通过正常 Orchestrator 入口执行，结束后从
@@ -642,7 +667,7 @@ Task、TaskStep、plan_events 和 metrics 读取证据，由确定性 Scorer 计
 
 ### P1-3：Token、时延和成本计量
 
-**状态：实现完成，待独立执行（2026-09-26，功能分支 `feat/harness-p1-3`）**
+**状态：已完成（2026-09-28，`main` / `b9bbe72`，聚焦 20 passed、全量 364 passed）**
 
 最小实现方案：保留 `llm_events` 作为追加式原始证据，新增独立 `metering/` 从这些事件
 生成可重算的 `metrics.usage`，避免把聚合结果当成另一份事实源。所有模型调用按 task、
