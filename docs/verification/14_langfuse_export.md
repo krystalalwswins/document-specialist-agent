@@ -135,6 +135,32 @@ python -m pytest tests/test_langfuse_exporter.py tests/test_trace_model.py \
   output 含执行结果；下载 URL 中的 `Signature` 已被脱敏为 `[REDACTED]`，metadata 含 `bytes`。
 - 已核对 `cache_tokens` 只留在 metadata，未重复计入总 Token。
 
+### 设置 `TRACE_CODE_VERSION` 后的复验
+
+按「被验收提交必须可回溯」的要求，在 `.env` 设置
+`TRACE_CODE_VERSION=08586423afd1ed0c01ba0b7e6ddf4766948443c5`（本轮被验收树；其后提交
+仅为文档回填）后重跑同一脚本：
+
+| 项 | 值 |
+|---|---|
+| 任务 ID | `6e3fcfc3ce5f4630a350af76bd986e62` |
+| Trace ID | `1aefad787777b149a5a9facc5103cbe9` |
+| 业务状态 | `SUCCESS`，56.9s，产物 49 bytes |
+| 本地 ended 操作 | 150（SPAN 127 / GENERATION 16 / TOOL 7），`capture_status=COMPLETE` |
+| 远端 observation | 150，missing=0 extra=0 |
+| release | 150/150 均为 `08586423afd1ed0c01ba0b7e6ddf4766948443c5` |
+| Token 交叉核对 | 本地 62532 = 远端 generation `usageDetails.total` 合计 62532 |
+
+这一轮同时命中了两个真实场景，验证了失败路径不是纸面设计：
+
+1. **索引延迟**：导出刚结束时远端只有 146 条，其中 3 条本地已 `accepted` 却查不到；
+   等待约 2 分钟后复读为 149 条，说明"端点已接收 ≠ 立即可读"。
+2. **不确定发送 + 人工处理**：`context_events` 一条操作首次发送超时，本地回执为
+   `uncertain`（不再自动重发）。用 `GET /tasks/{id}/trace/export` 确认其未出现在远端后，
+   `POST /tasks/{id}/trace/export/5c73039ca7fee94b/resolve` 传 `{"decision":"retry"}`
+   返回 200（`previous_status=uncertain`），导出线程重发后转为 `accepted`，远端随即出现该 ID；
+   最终 150/150 对齐。
+
 ### 遗留问题与注意事项
 
 1. 远端回读必须走 v4 的 v2 observations（含时间窗与 `fields`），旧接口返回 410；

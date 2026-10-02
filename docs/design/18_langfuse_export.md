@@ -82,6 +82,8 @@ cache_tokens 保留在 metadata，避免将已包含在 input 中的缓存 Token
 
 ```dotenv
 TRACE_ENABLED=true
+# 被验收/部署的确切提交；每个远端操作会带上 release，便于回溯是哪份代码产生
+TRACE_CODE_VERSION=08586423afd1ed0c01ba0b7e6ddf4766948443c5
 LANGFUSE_ENABLED=true
 LANGFUSE_BASE_URL=https://cloud.langfuse.com
 LANGFUSE_PUBLIC_KEY=填写项目PublicKey
