@@ -55,6 +55,9 @@ def test_registry_effective_parameters_and_denial(tmp_path):
     from tools.tool_registry import ToolRegistry
     from tools.base_tool import BaseTool, ToolResult
     from security.permission_manager import PermissionManager
+    # Tool paths are POSIX container paths, exactly like production settings; a
+    # host tmp_path (e.g. "C:\\...") is rejected by the path guard by design.
+    workspace = "/home/gem/workspace"
     class Read(BaseTool):
         name = "read_file"
         description = "test"
@@ -63,7 +66,7 @@ def test_registry_effective_parameters_and_denial(tmp_path):
             return {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
         def execute(self, **kwargs):
             return ToolResult(True, output=kwargs["path"])
-    registry = ToolRegistry(PermissionManager(workspace=str(tmp_path / "sandbox")))
+    registry = ToolRegistry(PermissionManager(workspace=workspace))
     registry.register(Read())
     store = TraceStore(tmp_path / "traces")
     r = TraceRecorder(store)

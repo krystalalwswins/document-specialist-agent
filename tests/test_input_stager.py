@@ -1,5 +1,6 @@
 """InputStager: object storage -> sandbox, with prefix and path guards."""
 
+import hashlib
 from types import SimpleNamespace
 
 import pytest
@@ -53,6 +54,8 @@ def test_stages_object_under_workspace():
         "sandbox_path": "/home/gem/workspace/tasks/task1/sales.xlsx",
         "filename": "sales.xlsx",
         "bytes": 10,
+        # Explicit record extension for tracing: staged bytes carry their digest.
+        "sha256": hashlib.sha256(b"xlsx-bytes").hexdigest(),
     }
     assert storage.downloads == ["raw/sales.xlsx"]
     assert sandbox.writes == [
