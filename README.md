@@ -433,10 +433,16 @@ T3 已补齐工具派发/实际执行、重试关联、计划快照、上下文�
 当前实现待独立验收，仍未接 Langfuse；详见
 [T3 学习说明](docs/design/17_trace_tools_delivery.md) 和 [T3 验收](docs/verification/13_trace_tools_delivery.md)。
 
-T4 已新增可选 Langfuse OTLP 导出（实现待验收）：独立线程读取本地已结束操作，
+T4 已新增可选 Langfuse OTLP 导出并完成真实联调：独立线程读取本地已结束操作，
 保持 Trace/父子 ID，发送模型、工具和交付数据；记录持久化回执，限流退避，
 不确定发送暂停并允许人工核对后处理。默认 `LANGFUSE_ENABLED=false`。
 配置地址与项目密钥后重启 API，新任务才登记导出，不自动上传历史任务。
-状态：`GET /tasks/{task_id}/trace/export`。
-详见 [T4 配置和学习说明](docs/design/18_langfuse_export.md)、[T4 待执行验收](docs/verification/14_langfuse_export.md)。
-此前各段描述的是各阶段交付时状态；当前累计实现 T0～T4，均待本轮专题独立验收，尚无真实 Langfuse 联调证据。
+状态：`GET /tasks/{task_id}/trace/export`。生产验收建议同时设置 `TRACE_CODE_VERSION`
+为被验收提交，远端每个操作的 `release` 才能回溯到具体代码。
+导出吞吐约 1 span/秒，约 120 个操作的 Trace 需约 2 分钟才全部落地；
+远端回读用 v4 的 `GET /api/public/v2/observations`（需时间窗与 `fields`），
+旧 trace/observation 接口对新建组织返回 410。详见
+[T4 配置和学习说明](docs/design/18_langfuse_export.md)、
+[T4 验收记录](docs/verification/14_langfuse_export.md)、可复用脚本
+[`demo/trace_langfuse_acceptance.py`](demo/trace_langfuse_acceptance.py)。
+T0～T4 已完成离线用例与真实实例联调（123 个操作全部落库并与远端一致）。

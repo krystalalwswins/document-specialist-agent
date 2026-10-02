@@ -33,6 +33,8 @@ python -m pytest tests/test_langfuse_exporter.py tests/test_trace_model.py tests
 3. 本地查 trace/export，保存 Trace ID。Langfuse 按 ID 找到同一任务。
 4. 逐项核对模型实际输入、工具 Schema、代码、实际执行参数、返回、根输出。
 5. 比较 ended 本地操作 ID 集合和远端 observation ID 集合；不应缺项或重复。
+   远端读取请用下面「远端回读（v4）」的命令，不要用已废弃的 trace/observation 接口。
+   注意导出吞吐约 1 span/秒，**约 120 个操作的 Trace 要等约 2 分钟**才会全部落地。
 6. 验证模型重试各自独立；计划、上下文压缩、记忆等只在任务触发相应行为时出现。
 7. 费用仅配置单价时核对本地估算；缓存 Token 不重复计入总 Token。
 8. 暂时制造不可达端点，确认本地任务完成且导出标记 uncertain；恢复后人工核对再 resolve。
@@ -41,6 +43,45 @@ python -m pytest tests/test_langfuse_exporter.py tests/test_trace_model.py tests
 
 真实结果记录模板：代码提交 / 实例版本 / 测试任务 ID / Trace ID / 本地与远端 ID 数量 /
 失败样例 / 截图或只读证据 / 未覆盖项。不要把密钥和含敏感内容的 Trace 提交到仓库。
+
+## 远端回读（v4）
+
+2026-09-16 之后创建的 Langfuse 组织已停用 `GET /api/public/traces/{id}` 与
+`GET /api/public/observations`（返回 410 `LEGACY_API_UNAVAILABLE_FOR_NEW_ORGANIZATION`）。
+脚本化核对必须使用 v2 observations，并且必须显式给出**时间窗**与**字段分组**：
+
+```bash
+# 时间窗为 ISO8601 UTC；fields 省略时 input/output、model、usage 都不会返回
+curl -u "$LANGFUSE_PUBLIC_KEY:$LANGFUSE_SECRET_KEY" \
+  "https://<your-instance>/api/public/v2/observations?traceId=<trace_id>\
+&fromStartTime=<task_start_minus_2min>Z&toStartTime=<now_plus_2min>Z\
+&fields=core,basic,io,metadata,model,usage,trace_context&limit=100"
+```
+
+```python
+# 分页取全量并按 traceId 过滤，再与本地 ended 集合对账
+cursor = None
+ids, usage_total = [], 0
+for _ in range(10):
+    params = {"traceId": trace_id, "limit": "100",
+              "fromStartTime": window_from, "toStartTime": window_to,
+              "fields": "core,basic,io,metadata,model,usage,trace_context"}
+    if cursor:
+        params["cursor"] = cursor
+    body = get_json("/api/public/v2/observations", params)
+    rows = [o for o in body["data"] if o["traceId"] == trace_id]
+    ids += [o["id"] for o in rows]
+    usage_total += sum((o.get("usageDetails") or {}).get("total", 0)
+                       for o in rows if o["type"] == "GENERATION")
+    cursor = (body.get("meta") or {}).get("cursor")
+    if not cursor or len(body["data"]) < 100:
+        break
+assert set(ids) == set(local_ended_observation_ids)   # 缺项/多余都应为 0
+```
+
+示例：本轮 Trace `8233c472e80b08e48e629f07a36758ee` 首次按 `traceId + fields + 时间窗` 读取即
+返回 123 条，与本地 ended 集合完全一致；`usageDetails.total` 合计 54356 与本地计量一致。
+`demo/trace_langfuse_acceptance.py` 已内置该回读与对账逻辑，可直接复用。
 
 ## 执行结果（2026-10-02）
 
@@ -96,11 +137,11 @@ python -m pytest tests/test_langfuse_exporter.py tests/test_trace_model.py \
 
 ### 遗留问题与注意事项
 
-1. 该组织创建于 2026-09-16 之后，`GET /api/public/traces/{id}` 与 `GET /api/public/observations`
-   返回 410。脚本化回读必须使用 `GET /api/public/v2/observations?traceId=…&fields=core,basic,io,metadata,model,usage,trace_context`
-   并带 `fromStartTime`/`toStartTime` 时间窗（`io/model/usage` 分组默认不返回）。
-2. 导出为「每个 ended 操作一次 POST」，实测吞吐约 1 span/秒：123 个操作约需 2 分钟才全部落地。
-   首个短窗口内会看到 pending/sending；如需更快收敛，可考虑把同批 Span 合并到一个 OTLP 请求。
+1. 远端回读必须走 v4 的 v2 observations（含时间窗与 `fields`），旧接口返回 410；
+   完整命令、字段含义与分页/对账示例见上文「远端回读（v4）」。
+2. 导出为「每个 ended 操作一次 POST」，实测吞吐约 **1 span/秒**：123 个操作约需 **2 分钟**
+   才全部落地；首个短窗口内会看到 pending/sending 属正常。如需更快收敛，可考虑把同批 Span
+   合并到一个 OTLP 请求。
 3. 进程在根操作 still-sending 时退出，回执保持 `sending`，下次启动按设计转为 `uncertain`
    并继续发送（本轮已实测：上一轮遗留的 2 条在下一轮启动后转为 `accepted`）。
 4. `docs/verification/` 与 `docs/design/` 存在编号重叠：Trace 系列 10–14 与一次性容器系列

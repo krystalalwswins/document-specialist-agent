@@ -98,6 +98,33 @@ BASE_URL 必须与项目区域/部署匹配，以上只是 EU 地址示例；使
 4. 查询 `GET /tasks/{task_id}/trace` 获取 manifest.trace_id，再查 `GET /tasks/{task_id}/trace/export`。
 5. 在 Langfuse 按 Trace ID 或 metadata.task_id 查找，核对 Generation、工具参数、输出、根交付和时间。
 
+### 回读已导出数据（v4 只读接口）
+
+导出是"每个 ended 操作一次 POST"，实测吞吐约 **1 span/秒**：**约 120 个操作的 Trace 需要
+约 2 分钟才全部落地**，这期间 `GET /tasks/{task_id}/trace/export` 会显示 pending/sending，
+属正常现象（根操作在后台任务结束后才发送，因此任务运行中可能只看到子操作）。
+判定"是否全部送达"应以每条操作的回执状态为准，不要以短时间窗内的 UI 显示为准。
+
+脚本或 CI 核对时，不要调用已废弃的 `GET /api/public/traces/{id}` 与
+`GET /api/public/observations`（2026-09-16 之后创建的组织直接返回 410），改用 v2 observations：
+
+```http
+GET /api/public/v2/observations
+    ?traceId=<trace_id>
+    &fromStartTime=<任务开始前 2 分钟，ISO8601 UTC>
+    &toStartTime=<当前时间 + 2 分钟，ISO8601 UTC>
+    &fields=core,basic,io,metadata,model,usage,trace_context
+    &limit=100
+Authorization: Basic base64(<public_key>:<secret_key>)
+```
+
+- **时间窗必填**：`fromStartTime`/`toStartTime` 必须有界，缺失或过宽会显著变慢。
+- **字段必须显式声明**：不给 `fields` 时只返回 core/basic，`input`/`output`、`model`、
+  `usageDetails` 都为空，容易误判"没有发送内容"。
+- **分页**：用响应 `meta.cursor` 作为下一页的 `cursor` 参数继续取，直到不足 `limit`。
+- **对账**：响应里的 `id` 即 SpanId，应与本地 `ended` 操作的 `observation_id` 集合完全一致；
+  缺失与多余都应为 0，同时可核对 `usageDetails.total` 合计与本地计量的 total tokens。
+
 ## 6. 人工处理不确定发送
 
 先用 trace_id + observation_id 在 Langfuse 确认是否存在；缺少 UI 显示可能只是索引延迟。
@@ -120,9 +147,13 @@ Content-Type: application/json
 仅支持同一 TraceStore 单进程部署（与现有文件任务存储一致），不支持多个 Uvicorn worker。
 轮询会扫描目录，适合当前本地原型；大量历史任务需要后续索引/清理策略。
 只验证“记录与传输是否正确”，不评价 Agent 的业务答案；没有读取模型隐藏思维。
-本轮没有运行单元测试、真实网络联调或 T5 完整验收，不能宣称 Langfuse 已成功收到数据。
+2026-10-02 已完成离线用例与真实实例联调：123 个 ended 操作全部 `accepted`，远端 observation
+数量与 ID 集合、Token 合计均与本地一致；证据、任务 ID 与 Trace ID 见
+[`docs/verification/14_langfuse_export.md`](../verification/14_langfuse_export.md)。
+未覆盖的仍是真实端点故障路径（429/5xx/超时/非法 resolve）。
 
 官方参考：
 - https://langfuse.com/integrations/native/opentelemetry
 - https://langfuse.com/integrations/native/opentelemetry/migration-to-v4
+- https://langfuse.com/docs/api-and-data-platform/features/observations-api
 - https://langfuse.com/docs/api-and-data-platform/features/public-api
