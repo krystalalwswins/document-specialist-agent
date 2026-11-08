@@ -1,6 +1,6 @@
 {
   "id": "document-specialist-harness-core",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Nine deterministic cases covering the P1-2 Agent Harness evaluation contract.",
   "cases": [
     {
@@ -11,6 +11,7 @@
       "fixture": "document_parse",
       "input_files": [{"oss_key": "raw/evaluation/brief.docx"}],
       "expectation": {
+        "tool_match": "required",
         "tools": ["parse_document"],
         "completed_steps": ["parse"]
       },
@@ -38,33 +39,145 @@
     {
       "id": "structured-statistics",
       "category": "structured_data_statistics",
-      "description": "The Agent uses code execution for deterministic tabular statistics.",
-      "user_input": "Calculate the total and average from the staged sales table.",
+      "description": "Verify delivered statistics CSV against an independent oracle; allow different computation routes.",
+      "user_input": "Read the staged sales.csv. Sum sales and calculate the arithmetic mean per region and for all rows. Save summary.csv with columns region,total,average; use ALL for the overall row. Upload the CSV as the deliverable.",
       "fixture": "structured_statistics",
-      "input_files": [{"oss_key": "raw/evaluation/sales.csv"}],
+      "input_files": [
+        {
+          "oss_key": "raw/evaluation/sales.csv"
+        }
+      ],
       "expectation": {
-        "tools": ["run_python"],
-        "completed_steps": ["calculate"]
+        "tool_match": "required",
+        "tools": [
+          "save_report"
+        ],
+        "artifact_validation": true,
+        "csv_result": {
+          "filename": "summary.csv",
+          "key_column": "region",
+          "rows": {
+            "East": {
+              "total": "30",
+              "average": "15"
+            },
+            "West": {
+              "total": "30",
+              "average": "30"
+            },
+            "ALL": {
+              "total": "60",
+              "average": "20"
+            }
+          },
+          "absolute_tolerance": "0.000001"
+        }
       },
       "fake": {
-        "plan": [{
-          "step_id": "calculate",
-          "name": "calculate statistics",
-          "description": "calculate total and average from structured rows",
-          "tool": "run_python",
-          "depends_on": [],
-          "completion_criteria": ["total and average are observable"]
-        }],
-        "tools": [{
-          "name": "run_python",
-          "outcomes": [{"success": true, "output": "total=60, average=20"}]
-        }],
+        "plan": [
+          {
+            "step_id": "calculate",
+            "name": "calculate statistics",
+            "description": "calculate total and average from structured rows",
+            "tool": "run_python",
+            "depends_on": [],
+            "completion_criteria": [
+              "total and average are observable"
+            ]
+          },
+          {
+            "step_id": "save",
+            "name": "save statistics",
+            "description": "deliver summary CSV",
+            "tool": "save_report",
+            "depends_on": [
+              "calculate"
+            ],
+            "completion_criteria": [
+              "CSV delivered"
+            ]
+          }
+        ],
+        "tools": [
+          {
+            "name": "run_python",
+            "outcomes": [
+              {
+                "success": true,
+                "output": "total=60, average=20"
+              }
+            ]
+          },
+          {
+            "name": "save_report",
+            "outcomes": [
+              {
+                "success": true,
+                "output": "summary saved",
+                "artifact_content": "region,total,average\nEast,30,15\nWest,30,30\nALL,60,20\n",
+                "metadata": {
+                  "kind": "artifact",
+                  "oss_key": "reports/evaluation/summary.csv",
+                  "bytes": 53
+                }
+              }
+            ]
+          }
+        ],
         "responses": [
-          {"tool_calls": [{"name": "run_python", "arguments": {"value": "sum and average", "plan_step_id": "calculate"}}]},
-          {"tool_calls": [{"name": "complete_plan_step", "arguments": {"step_id": "calculate", "evidence": "total=60 and average=20"}}]},
-          {"content": "Total is 60 and average is 20."}
+          {
+            "tool_calls": [
+              {
+                "name": "run_python",
+                "arguments": {
+                  "value": "sum and average",
+                  "plan_step_id": "calculate"
+                }
+              }
+            ]
+          },
+          {
+            "tool_calls": [
+              {
+                "name": "complete_plan_step",
+                "arguments": {
+                  "step_id": "calculate",
+                  "evidence": "total=60 and average=20"
+                }
+              }
+            ]
+          },
+          {
+            "tool_calls": [
+              {
+                "name": "save_report",
+                "arguments": {
+                  "value": "summary.csv",
+                  "plan_step_id": "save"
+                }
+              }
+            ]
+          },
+          {
+            "tool_calls": [
+              {
+                "name": "complete_plan_step",
+                "arguments": {
+                  "step_id": "save",
+                  "evidence": "summary CSV delivered"
+                }
+              }
+            ]
+          },
+          {
+            "content": "Total is 60 and average is 20."
+          }
+        ],
+        "artifact_validation": [
+          true
         ]
-      }
+      },
+      "require_artifact": true
     },
     {
       "id": "artifact-generation",
@@ -74,6 +187,7 @@
       "fixture": "artifact_generation",
       "require_artifact": true,
       "expectation": {
+        "tool_match": "required",
         "tools": ["save_report"],
         "completed_steps": ["save"],
         "artifact_validation": true,
@@ -111,6 +225,7 @@
       "user_input": "Analyze the missing quarterly source and report what can be concluded.",
       "fixture": "missing_data",
       "expectation": {
+        "tool_match": "required",
         "tools": [],
         "completed_steps": ["report_missing"],
         "replan": true
@@ -146,6 +261,7 @@
       "user_input": "Parse the brief and recover if the first Tool Call has invalid parameters.",
       "fixture": "tool_parameter_error",
       "expectation": {
+        "tool_match": "exact",
         "tools": ["parse_document", "parse_document"],
         "completed_steps": ["parse"],
         "failure_recovery": true
@@ -179,6 +295,7 @@
       "user_input": "Read the input despite one temporary storage failure.",
       "fixture": "transient_failure",
       "expectation": {
+        "tool_match": "exact",
         "tools": ["read_file"],
         "completed_steps": ["read"],
         "failure_recovery": true
@@ -214,6 +331,7 @@
       "user_input": "Inspect the relevant beginning of a large execution result.",
       "fixture": "large_output",
       "expectation": {
+        "tool_match": "exact",
         "tools": ["run_python", "read_tool_output"],
         "completed_steps": ["inspect"],
         "required_events": {"context_events": ["context_output_offloaded"]}
@@ -249,6 +367,7 @@
       "user_input": "Analyze the data using an available route when the primary source fails.",
       "fixture": "local_replanning",
       "expectation": {
+        "tool_match": "exact",
         "tools": ["read_file", "run_python"],
         "completed_steps": ["fallback_analysis"],
         "replan": true,
@@ -291,6 +410,7 @@
       "user_input": "Prepare the report using my established report preference.",
       "fixture": "memory_recall",
       "expectation": {
+        "tool_match": "required",
         "tools": [],
         "completed_steps": ["answer"],
         "required_events": {"memory_events": ["memory_recalled"]}

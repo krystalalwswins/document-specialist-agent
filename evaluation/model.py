@@ -38,9 +38,12 @@ class EvaluationExpectation:
 
     status: str = "SUCCESS"
     tools: tuple[str, ...] = ()
+    tool_match: str = "exact"
+    forbidden_tools: tuple[str, ...] = ()
+    csv_result: dict[str, Any] | None = None
     completed_steps: tuple[str, ...] = ()
     artifact_validation: bool = False
-    replan: bool = False
+    replan: bool | None = None
     failure_recovery: bool = False
     required_events: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
@@ -59,14 +62,27 @@ class EvaluationExpectation:
         status = _non_empty(data.get("status", "SUCCESS"), "expectation.status")
         if status not in {"CREATED", "RUNNING", "SUCCESS", "FAILED"}:
             raise ValueError(f"unsupported expected task status: {status}")
+        tool_match = data.get("tool_match", "exact")
+        if tool_match not in {"exact", "required"}:
+            raise ValueError("tool_match must be exact or required")
+        replan = data.get("replan", False if tool_match == "exact" else None)
+        if replan is not None and not isinstance(replan, bool):
+            raise ValueError("replan must be a boolean or null")
+        csv_result = data.get("csv_result")
+        if csv_result is not None:
+            from .result_checks import validate_csv_rule
+            validate_csv_rule(csv_result)
         return cls(
             status=status,
+            tool_match=tool_match,
+            forbidden_tools=_string_tuple(data.get("forbidden_tools", []), "forbidden_tools"),
+            csv_result=csv_result,
             tools=_string_tuple(data.get("tools", []), "expectation.tools"),
             completed_steps=_string_tuple(
                 data.get("completed_steps", []), "expectation.completed_steps"
             ),
             artifact_validation=bool(data.get("artifact_validation", False)),
-            replan=bool(data.get("replan", False)),
+            replan=replan,
             failure_recovery=bool(data.get("failure_recovery", False)),
             required_events=event_groups,
         )
@@ -75,6 +91,9 @@ class EvaluationExpectation:
         return {
             "status": self.status,
             "tools": list(self.tools),
+            "tool_match": self.tool_match,
+            "forbidden_tools": list(self.forbidden_tools),
+            "csv_result": self.csv_result,
             "completed_steps": list(self.completed_steps),
             "artifact_validation": self.artifact_validation,
             "replan": self.replan,
@@ -181,6 +200,7 @@ class CaseResult:
     total_tokens: int
     latency_ms: float
     error: str | None = None
+    check_details: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -190,6 +210,7 @@ class CaseResult:
             "task_id": self.task_id,
             "task_status": self.task_status,
             "checks": dict(self.checks),
+            "check_details": dict(self.check_details),
             "tool_selection_accuracy": self.tool_selection_accuracy,
             "plan_step_completion_rate": self.plan_step_completion_rate,
             "artifact_validation_passed": self.artifact_validation_passed,

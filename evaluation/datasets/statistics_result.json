@@ -1,0 +1,45 @@
+{
+  "id": "statistics-result",
+  "version": "1.0.0",
+  "description": "Real-model CSV result verification; stage evaluation/fixtures/sales.csv at raw/evaluation/sales.csv first.",
+  "cases": [
+    {
+      "id": "structured-statistics",
+      "category": "structured_data_statistics",
+      "description": "Verify delivered statistics CSV against an independent oracle; allow different computation routes.",
+      "user_input": "Read the staged sales.csv. Sum sales and calculate the arithmetic mean per region and for all rows. Save summary.csv with columns region,total,average; use ALL for the overall row. Upload the CSV as the deliverable.",
+      "input_files": [
+        {
+          "oss_key": "raw/evaluation/sales.csv"
+        }
+      ],
+      "expectation": {
+        "tool_match": "required",
+        "tools": [
+          "save_report"
+        ],
+        "artifact_validation": true,
+        "csv_result": {
+          "filename": "summary.csv",
+          "key_column": "region",
+          "rows": {
+            "East": {
+              "total": "30",
+              "average": "15"
+            },
+            "West": {
+              "total": "30",
+              "average": "30"
+            },
+            "ALL": {
+              "total": "60",
+              "average": "20"
+            }
+          },
+          "absolute_tolerance": "0.000001"
+        }
+      },
+      "require_artifact": true
+    }
+  ]
+}

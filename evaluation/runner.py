@@ -33,8 +33,9 @@ class CaseExecutor(Protocol):
 class OrchestratorCaseExecutor:
     """Adapter used by real-model evaluation and reusable by custom datasets."""
 
-    def __init__(self, orchestrator: AgentOrchestrator) -> None:
+    def __init__(self, orchestrator: AgentOrchestrator, artifact_reader=None) -> None:
         self._orchestrator = orchestrator
+        self.read_artifact = artifact_reader
 
     def execute(self, case: EvaluationCase) -> CaseExecution:
         manager = self._orchestrator.task_manager
@@ -60,7 +61,7 @@ class EvaluationRunner:
         scorer: EvaluationScorer | None = None,
     ) -> None:
         self._executor = executor
-        self._scorer = scorer or EvaluationScorer()
+        self._scorer = scorer or EvaluationScorer(getattr(executor, "read_artifact", None))
 
     def run(
         self,

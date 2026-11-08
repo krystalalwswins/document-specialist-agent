@@ -78,6 +78,7 @@ class EvaluationReporter:
                 failed = [name for name, passed in case.checks.items() if not passed]
                 lines.append(
                     f"- `{case.case_id}`: {', '.join(failed) or 'unknown'}"
+                    + "".join(f"; {name}: {case.check_details[name]}" for name in failed if name in case.check_details)
                     + (f"; {case.error}" if case.error else "")
                 )
         return "\n".join(lines) + "\n"

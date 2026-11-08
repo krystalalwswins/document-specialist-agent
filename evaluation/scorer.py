@@ -12,10 +12,14 @@ from typing import Iterable
 
 from task.task_model import StepStatus, Task, TaskStatus
 
+from .result_checks import check_csv_result
 from .model import CaseResult, EvaluationCase, SuiteMetrics
 
 
 class EvaluationScorer:
+    def __init__(self, artifact_reader=None) -> None:
+        self._artifact_reader = artifact_reader
+
     def score_case(
         self,
         case: EvaluationCase,
@@ -33,12 +37,27 @@ class EvaluationScorer:
         artifact_passed = self._artifact_validation(task, expected.artifact_validation)
         recovered = self._failure_recovery(task, expected.failure_recovery)
 
+        successful_tools = {step.tool for step in task.steps if step.status is StepStatus.SUCCESS}
+        details: dict[str, str] = {}
         checks: dict[str, bool] = {
             "task_status": task.status.value == expected.status,
-            "tool_sequence": actual_tools == expected.tools,
             "completed_steps": set(expected.completed_steps) <= completed,
-            "replan": (replans > 0) == expected.replan,
         }
+        if expected.tool_match == "exact":
+            checks["tool_sequence"] = actual_tools == expected.tools
+            tool_accuracy = self._sequence_accuracy(expected.tools, actual_tools)
+        else:
+            # Required tools must succeed, but extra/reordered calls are allowed.
+            checks["required_tools"] = set(expected.tools) <= successful_tools
+            tool_accuracy = self._completion_rate(expected.tools, successful_tools)
+        if expected.forbidden_tools:
+            checks["forbidden_tools"] = not (set(expected.forbidden_tools) & set(actual_tools))
+        if expected.replan is not None:
+            checks["replan"] = (replans > 0) == expected.replan
+        if expected.csv_result is not None:
+            checks["csv_result"], details["csv_result"] = check_csv_result(
+                task, expected.csv_result, self._artifact_reader
+            )
         if expected.artifact_validation:
             checks["artifact_validation"] = artifact_passed is True
         if expected.failure_recovery:
@@ -62,9 +81,7 @@ class EvaluationScorer:
             task_id=task.id,
             task_status=task.status.value,
             checks=checks,
-            tool_selection_accuracy=self._sequence_accuracy(
-                expected.tools, actual_tools
-            ),
+            tool_selection_accuracy=tool_accuracy,
             plan_step_completion_rate=self._completion_rate(
                 expected.completed_steps, completed
             ),
@@ -75,6 +92,7 @@ class EvaluationScorer:
             total_tokens=self._total_tokens(task),
             latency_ms=max(0.0, float(latency_ms)),
             error=error,
+            check_details=details,
         )
 
     def aggregate(self, results: Iterable[CaseResult]) -> SuiteMetrics:

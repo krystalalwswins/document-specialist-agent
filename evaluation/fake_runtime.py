@@ -163,7 +163,9 @@ class ScriptedTool(BaseTool):
         outcomes: list[dict[str, Any]],
         *,
         retry_safe: bool,
+        artifact_store: dict[str, bytes] | None = None,
     ) -> None:
+        self._artifact_store = artifact_store
         self.name = name
         self.retry_safe = retry_safe
         self._outcomes = list(outcomes or [{"success": True, "output": f"{name} ok"}])
@@ -187,6 +189,10 @@ class ScriptedTool(BaseTool):
                 str(repeated.get("text", "x")) * int(repeated.get("count", 1))
                 + str(repeated.get("suffix", ""))
             )
+        if raw.get("success", True) and "artifact_content" in raw:
+            key = raw["metadata"]["oss_key"]
+            if self._artifact_store is not None:
+                self._artifact_store[key] = raw["artifact_content"].encode("utf-8")
         error_type = raw.get("error_type")
         return ToolResult(
             success=bool(raw.get("success", True)),
@@ -258,8 +264,13 @@ class FakeCaseExecutor:
 
     def __init__(self, work_dir: str | Path) -> None:
         self._work_dir = Path(work_dir)
+        self._artifacts: dict[str, bytes] = {}
+
+    def read_artifact(self, key: str) -> bytes:
+        return self._artifacts[key]
 
     def execute(self, case: EvaluationCase) -> CaseExecution:
+        self._artifacts.clear()
         orchestrator = self._build(case)
         return OrchestratorCaseExecutor(orchestrator).execute(case)
 
@@ -291,6 +302,7 @@ class FakeCaseExecutor:
                     str(tool["name"]),
                     list(tool.get("outcomes", [])),
                     retry_safe=bool(tool.get("retry_safe", False)),
+                    artifact_store=self._artifacts,
                 )
             )
 
