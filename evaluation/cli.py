@@ -48,7 +48,12 @@ def main(argv: list[str] | None = None) -> int:
         from core.config import get_settings
 
         settings = get_settings()
-        executor = OrchestratorCaseExecutor(build_orchestrator(settings))
+        from storage.storage_manager import StorageManager
+
+        storage = StorageManager(settings)
+        executor = OrchestratorCaseExecutor(
+            build_orchestrator(settings), artifact_reader=storage.download_file_content
+        )
         model = settings.llm_model
 
     report = EvaluationRunner(executor).run(

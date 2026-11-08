@@ -47,7 +47,7 @@ def _successful_task():
 def test_default_dataset_is_versioned_and_covers_nine_required_categories():
     dataset = load_dataset(DEFAULT_DATASET)
 
-    assert dataset.version == "1.0.0"
+    assert dataset.version == "1.1.0"
     assert len(dataset.cases) == 9
     assert {case.category for case in dataset.cases} == {
         "document_parsing",
@@ -116,7 +116,7 @@ def test_reporter_writes_versioned_json_and_markdown(tmp_path):
     json_path, markdown_path = EvaluationReporter(tmp_path / "reports").write(report)
 
     payload = json.loads(json_path.read_text(encoding="utf-8"))
-    assert payload["dataset_version"] == "1.0.0"
+    assert payload["dataset_version"] == "1.1.0"
     assert payload["prompt_version"] == "test-prompts"
     assert payload["model"] == "scripted-fake"
     assert "Aggregate metrics" in markdown_path.read_text(encoding="utf-8")
